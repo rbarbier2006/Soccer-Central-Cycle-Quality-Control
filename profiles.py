@@ -1,53 +1,56 @@
-
 # profiles.py
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+
+def col(letter: str) -> int:
+    """
+    Convert Excel column letter(s) to 0-based index:
+    A -> 0, B -> 1, ..., Z -> 25, AA -> 26, etc.
+    """
+    s = letter.strip().upper()
+    n = 0
+    for ch in s:
+        if not ("A" <= ch <= "Z"):
+            raise ValueError(f"Invalid column letter: {letter}")
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n - 1
 
 
 @dataclass(frozen=True)
 class SurveyProfile:
-    # REQUIRED (no defaults) - MUST COME FIRST
+    # Required (no defaults first)
     key: str
+    title: str
+
     respondent_singular: str
     respondent_plural: str
 
     respondent_name_index: int
     group_col_index: int
 
-    rating_col_indices: List[int]
-    yesno_col_indices: List[int]
+    rating_col_indices: Tuple[int, ...]
+    yesno_col_indices: Tuple[int, ...]
 
-    # OPTIONAL / DEFAULTS - MUST COME AFTER REQUIRED
+    # Optional (defaults after)
     choice_col_index: Optional[int] = None
     qq_rating_col_index: Optional[int] = None
+
     unassigned_label: str = "UNASSIGNED"
 
-    # Use default_factory for mutable types
-    team_coach_map: Dict[str, str] = field(default_factory=dict)
-    denominator_map: Dict[str, int] = field(default_factory=dict)
-    chart_labels: Dict[int, str] = field(default_factory=dict)
+    team_coach_map: Optional[Dict[str, str]] = None
+    denominator_map: Optional[Dict[str, int]] = None
+    chart_labels: Optional[Dict[int, str]] = None
 
 
-# ----------------------------
-# PLAYERS PROFILE (your current one)
-# ----------------------------
+# -----------------------------
+# Shared team metadata (same as your old code)
+# -----------------------------
 
-PLAYERS_CHART_LABELS = {
-    1: "(1)Safety and Support",
-    2: "(2)Improvement",
-    3: "(3)Instructions and Feedback",
-    4: "(4)Coaches Listening",
-    5: "(5)Effort and Discipline",
-    6: "(6)SC Value Alignment",
-    7: "(7)Overall Experience",
-    8: "(8)Team Belonging",
-    9: "(9)Cycle Enjoyment",
-}
-
-PLAYERS_TEAM_COACH_MAP = {
+TEAM_COACH_MAP: Dict[str, str] = {
     "MLS HG U19": "Jorge",
     "MLS HG U17": "Chris",
     "MLS HG U16": "David K",
@@ -82,7 +85,7 @@ PLAYERS_TEAM_COACH_MAP = {
     "PDF U9 Red": "Pablo",
 }
 
-PLAYERS_DENOMINATOR_MAP = {
+TEAM_ROSTER_SIZE: Dict[str, int] = {
     "MLS HG U19": 19,
     "MLS HG U17": 19,
     "MLS HG U16": 13,
@@ -117,44 +120,90 @@ PLAYERS_DENOMINATOR_MAP = {
     "PDF U9 Red": 8,
 }
 
+
+# -----------------------------
+# Players profile (based on your column layout)
+# -----------------------------
+# Players:
+# F = Player Name
+# G = Player Team
+# H-L = ratings (5)
+# M-N = yes/no (2)
+# O = multiple choice (1)
+# P-Q = ratings (2)
+# R = comments (auto-detected by header; no index needed here)
+
+PLAYERS_RATING_COLS = tuple([col("H"), col("I"), col("J"), col("K"), col("L"), col("P"), col("Q")])
+PLAYERS_YESNO_COLS = tuple([col("M"), col("N")])
+PLAYERS_CHOICE_COL = col("O")
+
+# Chart labels only for the first 7 charts (your old meaning).
+# If you want labels for yes/no and choice too, we can add them.
+PLAYERS_CHART_LABELS: Dict[int, str] = {
+    1: "(1)Safety and Support",
+    2: "(2)Improvement",
+    3: "(3)Instructions and Feedback",
+    4: "(4)Coaches Listening",
+    5: "(5)Effort and Discipline",
+    6: "(6)SC Value Alignment",
+    7: "(7)Overall Experience",
+}
+
 PLAYERS_PROFILE = SurveyProfile(
     key="players",
+    title="Players Survey",
     respondent_singular="player",
     respondent_plural="players",
-    respondent_name_index=6,   # update if needed
-    group_col_index=7,         # update if needed
-    rating_col_indices=[0, 1, 2, 3, 4, 5, 6],   # update to your real rating columns
-    yesno_col_indices=[7, 8],                  # update to your real yes/no columns
-    choice_col_index=9,        # update or set None
-    qq_rating_col_index=None,  # leave None to use 7th rating as fallback
-    unassigned_label="UNASSIGNED",
-    team_coach_map=PLAYERS_TEAM_COACH_MAP,
-    denominator_map=PLAYERS_DENOMINATOR_MAP,
+    respondent_name_index=col("F"),
+    group_col_index=col("G"),
+    rating_col_indices=PLAYERS_RATING_COLS,
+    yesno_col_indices=PLAYERS_YESNO_COLS,
+    choice_col_index=PLAYERS_CHOICE_COL,
+    # QQ should be "Overall Experience". In your old logic that was rating #7.
+    # With the layout you gave, rating #7 is column Q.
+    qq_rating_col_index=col("Q"),
+    team_coach_map=TEAM_COACH_MAP,
+    denominator_map=TEAM_ROSTER_SIZE,
     chart_labels=PLAYERS_CHART_LABELS,
 )
 
 
-# ----------------------------
-# FAMILIES PROFILE (placeholder, you will set real indices)
-# ----------------------------
+# -----------------------------
+# Families profile (based on your column layout + the Team column assumption)
+# -----------------------------
+# Families:
+# G = Player Name (used as the "respondent" label in the report)
+# H = Player Team (ASSUMED; needed for grouping)
+# I-J = ratings (2)
+# K = yes/no (1)
+# L-X = ratings (13)
+# Y = comments (auto-detected by header)
 
+FAMILIES_RATING_COLS = tuple([col("I"), col("J")] + list(range(col("L"), col("X") + 1)))
+FAMILIES_YESNO_COLS = tuple([col("K")])
+
+# You told me: "for first page, consider column Q, overall satisfaction"
+# Q exists inside L-X, so we set QQ column to Q.
 FAMILIES_PROFILE = SurveyProfile(
     key="families",
+    title="Families Survey",
     respondent_singular="family",
     respondent_plural="families",
-    respondent_name_index=0,      # TODO set correctly
-    group_col_index=0,            # TODO set correctly
-    rating_col_indices=[],        # TODO set correctly
-    yesno_col_indices=[],         # TODO set correctly
-    choice_col_index=None,        # TODO if you have one
-    qq_rating_col_index=None,     # TODO if summary should use a specific rating column
-    unassigned_label="UNASSIGNED",
-    team_coach_map=PLAYERS_TEAM_COACH_MAP,  # or a separate map if needed
-    denominator_map=PLAYERS_DENOMINATOR_MAP, # or separate if needed
-    chart_labels={},              # optional
+    respondent_name_index=col("G"),
+    group_col_index=col("H"),  # change this if your Team column is different
+    rating_col_indices=FAMILIES_RATING_COLS,
+    yesno_col_indices=FAMILIES_YESNO_COLS,
+    choice_col_index=None,
+    qq_rating_col_index=col("Q"),
+    team_coach_map=TEAM_COACH_MAP,
+    denominator_map=TEAM_ROSTER_SIZE,
+    # If you don't want short labels, set this to None and it will show full question headers.
+    chart_labels={i: f"({i})Q{i}" for i in range(1, len(FAMILIES_RATING_COLS) + len(FAMILIES_YESNO_COLS) + 1)},
 )
 
-PROFILES = {
+
+# Registry used by pdf_report.py
+PROFILES: Dict[str, SurveyProfile] = {
     "players": PLAYERS_PROFILE,
     "families": FAMILIES_PROFILE,
 }
