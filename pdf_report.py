@@ -1,4 +1,3 @@
-
 # pdf_report.py
 
 import os
@@ -15,21 +14,31 @@ from profiles import SurveyProfile, PROFILES
 
 
 # -----------------------------
-# Small helpers
+# Constants
 # -----------------------------
 
 YES_SET = {"YES", "Y", "TRUE", "1"}
 NO_SET = {"NO", "N", "FALSE", "0"}
+RATING_LIKE_SET = {"1", "2", "3", "4", "5", "1.0", "2.0", "3.0", "4.0", "5.0"}
 
 
-def _clean_series_as_str(s: pd.Series) -> pd.Series:
+# -----------------------------
+# Small helpers
+# -----------------------------
+
+def _clean_series_as_str_dropna(s: pd.Series) -> pd.Series:
     return s.dropna().astype(str).str.strip()
+
+
+def _clean_series_as_str_keep_len(s: pd.Series) -> pd.Series:
+    # Keep row alignment; empty string for NaN.
+    return s.fillna("").astype(str).str.strip()
 
 
 def _get_unique_respondent_count(df_group: pd.DataFrame, name_idx: int) -> int:
     if name_idx < 0 or name_idx >= len(df_group.columns):
         return int(len(df_group))
-    names = _clean_series_as_str(df_group.iloc[:, name_idx])
+    names = _clean_series_as_str_dropna(df_group.iloc[:, name_idx])
     names = names[names != ""]
     return int(names.nunique())
 
@@ -60,8 +69,47 @@ def _format_count_pct_cell(profile: SurveyProfile, team_name: str, count: int) -
     return f"{count} ({pct:.0f}%)"
 
 
+def _assert_profile_and_df_make_sense(profile: SurveyProfile, df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        raise ValueError("The Excel sheet is empty or could not be read.")
+
+    cols = list(df.columns)
+
+    if profile.group_col_index < 0 or profile.group_col_index >= len(cols):
+        raise ValueError(
+            f"Group column index is outside available columns. "
+            f"group_col_index={profile.group_col_index}, ncols={len(cols)}"
+        )
+
+    if profile.respondent_name_index < 0 or profile.respondent_name_index >= len(cols):
+        raise ValueError(
+            f"Respondent name index is outside available columns. "
+            f"respondent_name_index={profile.respondent_name_index}, ncols={len(cols)}"
+        )
+
+    group_col_name = df.columns[profile.group_col_index]
+    sample = (
+        df[group_col_name]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .head(80)
+    )
+    if len(sample) > 0:
+        frac_rating_like = float(sample.isin(list(RATING_LIKE_SET)).mean())
+        # If most values are 1-5, your "group" is pointing at a rating column.
+        if frac_rating_like > 0.60:
+            raise ValueError(
+                "BUG: Your grouping column looks like a 1-5 rating column. "
+                f"group_col_index={profile.group_col_index}, group_col_name='{group_col_name}', "
+                f"rating_like_fraction={frac_rating_like:.2f}. "
+                "Fix profiles.py (group_col_index) or ensure you selected the correct survey_type."
+            )
+
+
 # -----------------------------
-# Builders for low ratings / NO answers (generic, not players-only)
+# Builders for low ratings / NO answers
+# (generic; works for players and families)
 # -----------------------------
 
 def build_low_ratings_table(
@@ -77,16 +125,17 @@ def build_low_ratings_table(
     out_cols: Dict[str, List[str]] = {}
     max_len = 0
 
+    names_all = _clean_series_as_str_keep_len(df_group.iloc[:, respondent_name_index])
+
     for idx in rating_indices:
         if idx < 0 or idx >= len(cols):
             continue
 
         q_name = str(cols[idx])
-        series = pd.to_numeric(df_group.iloc[:, idx], errors="coerce")
-        names = _clean_series_as_str(df_group.iloc[:, respondent_name_index])
+        ratings_all = pd.to_numeric(df_group.iloc[:, idx], errors="coerce")
 
         entries: List[str] = []
-        for n, v in zip(names, series):
+        for n, v in zip(names_all, ratings_all):
             if not n or pd.isna(v):
                 continue
             try:
@@ -96,7 +145,6 @@ def build_low_ratings_table(
             if 1 <= rv <= max_star:
                 entries.append(f"{n}, ({rv}*)")
 
-        # Keep column even if empty (we will still show header)
         out_cols[q_name] = entries
         max_len = max(max_len, len(entries))
 
@@ -127,16 +175,17 @@ def build_no_answers_table(
     out_cols: Dict[str, List[str]] = {}
     max_len = 0
 
+    names_all = _clean_series_as_str_keep_len(df_group.iloc[:, respondent_name_index])
+
     for idx in yesno_indices:
         if idx < 0 or idx >= len(cols):
             continue
 
         q_name = str(cols[idx])
-        series = _clean_series_as_str(df_group.iloc[:, idx]).str.upper()
-        names = _clean_series_as_str(df_group.iloc[:, respondent_name_index])
+        series_all = _clean_series_as_str_keep_len(df_group.iloc[:, idx]).str.upper()
 
         entries: List[str] = []
-        for n, v in zip(names, series):
+        for n, v in zip(names_all, series_all):
             if not n:
                 continue
             if v in NO_SET:
@@ -199,7 +248,7 @@ def _build_plot_metadata(profile: SurveyProfile, df_group: pd.DataFrame) -> List
 
     rating_indices = [i for i in (profile.rating_col_indices or []) if i < len(cols)]
     yesno_indices = [i for i in (profile.yesno_col_indices or []) if i < len(cols)]
-    has_choice = profile.choice_col_index is not None and profile.choice_col_index < len(cols)
+    has_choice = profile.choice_col_index is not None and int(profile.choice_col_index) < len(cols)
 
     meta: List[Dict[str, Any]] = []
     number = 1
@@ -213,14 +262,8 @@ def _build_plot_metadata(profile: SurveyProfile, df_group: pd.DataFrame) -> List
         number += 1
 
     if has_choice:
-        meta.append(
-            {
-                "ptype": "choice",
-                "idx": int(profile.choice_col_index),
-                "col_name": cols[int(profile.choice_col_index)],
-                "number": number,
-            }
-        )
+        cidx = int(profile.choice_col_index)
+        meta.append({"ptype": "choice", "idx": cidx, "col_name": cols[cidx], "number": number})
 
     return meta
 
@@ -259,6 +302,8 @@ def _add_group_charts_page_to_pdf(
     for ax in axes_flat[n_plots:]:
         ax.axis("off")
 
+    y_label = f"{profile.respondent_singular.capitalize()} Count"
+
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
         idx = meta["idx"]
@@ -284,12 +329,12 @@ def _add_group_charts_page_to_pdf(
 
             ax.set_title(title, fontsize=8)
             ax.set_xlabel("# of Stars", fontsize=7)
-            ax.set_ylabel("Count", fontsize=7)
+            ax.set_ylabel(y_label, fontsize=7)
             ax.tick_params(labelsize=7)
             ax.set_ylim(0, max(counts.values.tolist() + [1]) * 1.2)
 
         elif ptype == "yesno":
-            series = _clean_series_as_str(df_group.iloc[:, idx]).str.upper()
+            series = _clean_series_as_str_keep_len(df_group.iloc[:, idx]).str.upper()
             yes_count = int(series.isin(YES_SET).sum())
             no_count = int(series.isin(NO_SET).sum())
 
@@ -345,7 +390,7 @@ def _build_all_respondents_grid(
     if respondent_name_index < 0 or respondent_name_index >= len(df_group.columns):
         return None
 
-    names = _clean_series_as_str(df_group.iloc[:, respondent_name_index])
+    names = _clean_series_as_str_dropna(df_group.iloc[:, respondent_name_index])
     names = names[names != ""].drop_duplicates()
 
     if names.empty:
@@ -388,13 +433,16 @@ def _build_comments_table(
         return None
 
     rows: List[List[str]] = []
-    for _, row in df_group.iterrows():
-        who = str(row.iloc[respondent_name_index]).strip()
+
+    who_all = _clean_series_as_str_keep_len(df_group.iloc[:, respondent_name_index])
+
+    for row_i in range(len(df_group)):
+        who = str(who_all.iloc[row_i]).strip()
         if not who:
             continue
 
         for idx in comment_indices:
-            val = row.iloc[idx]
+            val = df_group.iloc[row_i, idx]
             if pd.isna(val):
                 continue
             txt = str(val).strip()
@@ -548,7 +596,11 @@ def _add_group_tables_page_to_pdf(
         ncols_low = len(low_df.columns)
         width_scale = 1.0 if ncols_low <= 8 else (0.85 if ncols_low <= 12 else 0.7)
         table.scale(width_scale, 1.15)
-        ax.set_title("1-2 Star Reviews (columns = chart numbers)" if is_all_teams else "1-3 Star Reviews (columns = chart numbers)", fontsize=10, pad=6)
+        ax.set_title(
+            "1-2 Star Reviews (columns = chart numbers)" if is_all_teams else "1-3 Star Reviews (columns = chart numbers)",
+            fontsize=10,
+            pad=6,
+        )
         row_idx += 1
 
     if no_df is not None:
@@ -591,7 +643,7 @@ def _add_group_tables_page_to_pdf(
         )
         table.auto_set_font_size(False)
         table.set_fontsize(8)
-        table.scale(1.0, 1.6)  # make cells taller
+        table.scale(1.0, 1.6)
         ax.set_title(f"{profile.respondent_plural.capitalize()} who completed this survey", fontsize=10, pad=4)
         row_idx += 1
 
@@ -606,8 +658,6 @@ def _add_group_tables_page_to_pdf(
         )
         table.auto_set_font_size(False)
         table.set_fontsize(8)
-
-        # Taller rows. If you want even taller, bump 2.2 -> 2.6
         table.scale(1.05, 2.2)
 
         for (r, c), cell in table.get_celld().items():
@@ -649,12 +699,23 @@ def _add_cycle_summary_page(
 
     group_col_name = df.columns[profile.group_col_index]
 
+    # Extra safety check (this is the exact bug in your screenshot)
+    sample = (
+        df[group_col_name]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .head(80)
+    )
+    if len(sample) > 0 and float(sample.isin(list(RATING_LIKE_SET)).mean()) > 0.60:
+        raise ValueError(
+            "BUG: Group column values look like 1-5 ratings, so teams become '5', '4', etc. "
+            f"Fix profiles.py: group_col_index currently points to '{group_col_name}'."
+        )
+
     rating_indices = [i for i in (profile.rating_col_indices or []) if i < len(cols)]
 
-    # Pick QQ rating index:
-    # - if profile explicitly sets qq_rating_col_index, use it
-    # - else mimic your old logic: 7th rating question (index 6) if present
-    if profile.qq_rating_col_index is not None and profile.qq_rating_col_index < len(cols):
+    if profile.qq_rating_col_index is not None and int(profile.qq_rating_col_index) < len(cols):
         qq_idx = int(profile.qq_rating_col_index)
     else:
         qq_idx = rating_indices[6] if len(rating_indices) >= 7 else None
@@ -689,9 +750,12 @@ def _add_cycle_summary_page(
     summary_df = pd.DataFrame(rows)
 
     total_responses = int(summary_df["Count"].sum())
-    total_str = f"{total_responses} {profile.respondent_singular}" if total_responses == 1 else f"{total_responses} {profile.respondent_plural}"
+    total_str = (
+        f"{total_responses} {profile.respondent_singular}"
+        if total_responses == 1
+        else f"{total_responses} {profile.respondent_plural}"
+    )
 
-    # Sort (same idea as your old one)
     summary_df = summary_df.sort_values(by=["Count", "Rating"], ascending=[False, False], ignore_index=True)
 
     summary_df["TeamCoach"] = summary_df["Team"] + " - " + summary_df["Coach"]
@@ -701,7 +765,6 @@ def _add_cycle_summary_page(
         for team, c in zip(summary_df["Team"], summary_df["Count"])
     ]
 
-    # Compute QQ index = rating * completion fraction
     qq_vals: List[float] = []
     for team, count, rating in zip(summary_df["Team"], summary_df["Count"], summary_df["Rating"]):
         if pd.isna(rating):
@@ -712,7 +775,6 @@ def _add_cycle_summary_page(
         if denom_map and denom_map.get(team) and denom_map.get(team) > 0:
             frac = float(count) / float(denom_map[team])
         else:
-            # If no denominator, treat completion fraction as 1.0 so QQ = rating
             frac = 1.0
 
         qq_vals.append(float(rating) * frac)
@@ -737,7 +799,7 @@ def _add_cycle_summary_page(
     )
     table.auto_set_font_size(False)
     table.set_fontsize(7)
-    table.scale(1.1, 1.2)  # slightly taller cells
+    table.scale(1.1, 1.2)
 
     for (r, c), cell in table.get_celld().items():
         if r == 0:
@@ -781,17 +843,16 @@ def create_pdf_report(
 
     df = pd.read_excel(input_path, sheet_name=0)
 
-    if profile.group_col_index >= len(df.columns):
-        raise ValueError("Group column is outside the available columns in the sheet.")
+    # IMPORTANT: fail fast if your profile points at the wrong "Team" column
+    _assert_profile_and_df_make_sense(profile, df)
 
     group_col_name = df.columns[profile.group_col_index]
     df[group_col_name] = df[group_col_name].fillna(profile.unassigned_label)
 
-    # Compute QQ order for teams with data
     cols = list(df.columns)
     rating_indices = [i for i in (profile.rating_col_indices or []) if i < len(cols)]
 
-    if profile.qq_rating_col_index is not None and profile.qq_rating_col_index < len(cols):
+    if profile.qq_rating_col_index is not None and int(profile.qq_rating_col_index) < len(cols):
         qq_idx = int(profile.qq_rating_col_index)
     else:
         qq_idx = rating_indices[6] if len(rating_indices) >= 7 else None
@@ -813,7 +874,6 @@ def create_pdf_report(
         stats_rows.append({"Team": team, "Count": count, "Avg": avg})
 
     if not stats_rows:
-        # No data; still return path (empty PDF not generated)
         return output_path
 
     stats_df = pd.DataFrame(stats_rows)
@@ -843,12 +903,10 @@ def create_pdf_report(
     with PdfPages(output_path) as pdf:
         _add_cycle_summary_page(pdf, profile, df, cycle_label)
 
-        # All teams pages
         all_meta = _build_plot_metadata(profile, df)
         _add_group_charts_page_to_pdf(pdf, profile, df, "All Teams", cycle_label, all_meta)
         _add_group_tables_page_to_pdf(pdf, profile, df, "All Teams", cycle_label, all_meta, is_all_teams=True)
 
-        # Team pages in QQ order
         for team in qq_sorted_teams:
             group_df = grouped.get(team)
             if group_df is None:
@@ -864,6 +922,15 @@ def create_pdf_report(
     return output_path
 
 
-# Backward-compatible name if you want:
-def create_pdf_from_original(input_path: str, cycle_label: str = "Cycle", output_path: Optional[str] = None) -> str:
-    return create_pdf_report(input_path=input_path, cycle_label=cycle_label, survey_type="players", output_path=output_path)
+# Backward-compatible name
+def create_pdf_from_original(
+    input_path: str,
+    cycle_label: str = "Cycle",
+    output_path: Optional[str] = None,
+) -> str:
+    return create_pdf_report(
+        input_path=input_path,
+        cycle_label=cycle_label,
+        survey_type="players",
+        output_path=output_path,
+    )
