@@ -831,7 +831,7 @@ def _add_cycle_summary_page(
         gridspec_kw={"width_ratios": [1.2, 1.8]},
     )
 
-    fig.suptitle(f"{cycle_label} Summary", fontsize=14, fontweight="bold")
+    fig.suptitle(f"{cycle_label} Summary {profile.title}", fontsize=14, fontweight="bold")
 
     ax_table.axis("off")
     display_df = summary_df[["TeamCoach", "CountDisplay", "RatingStr"]]
