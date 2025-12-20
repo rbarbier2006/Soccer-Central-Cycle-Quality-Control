@@ -627,22 +627,39 @@ def _add_group_tables_page_to_pdf(
     if low_df is not None:
         ax = axes[row_idx]
         ax.axis("off")
+    
+        ncols_low = len(low_df.columns)
+    
+        # Make the table fill the available width (equal column widths)
+        col_widths = [1.0 / max(ncols_low, 1)] * ncols_low
+    
         table = ax.table(
             cellText=low_df.values,
             colLabels=low_labels if low_labels is not None else low_df.columns,
             loc="upper left",
+            colWidths=col_widths,
         )
+    
         table.auto_set_font_size(False)
-        table.set_fontsize(7)
-        ncols_low = len(low_df.columns)
-        width_scale = 1.0 if ncols_low <= 8 else (0.85 if ncols_low <= 12 else 0.7)
-        table.scale(width_scale, 1.15)
+    
+        # Wide tables need smaller font, but do NOT shrink width
+        if ncols_low <= 10:
+            table.set_fontsize(7)
+        elif ncols_low <= 16:
+            table.set_fontsize(6)
+        else:
+            table.set_fontsize(5)
+    
+        # Keep full width; only adjust height a bit
+        table.scale(1.0, 1.15)
+    
         ax.set_title(
             "1-2 Star Reviews (columns = chart numbers)" if is_all_teams else "1-3 Star Reviews (columns = chart numbers)",
             fontsize=10,
             pad=6,
         )
         row_idx += 1
+
 
     if no_df is not None:
         ax = axes[row_idx]
