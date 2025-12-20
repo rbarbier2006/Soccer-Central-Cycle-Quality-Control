@@ -1,4 +1,12 @@
 # pdf_report.py
+#
+# Fixes included (core):
+# 1) Normalize the grouping column (Team) BEFORE any groupby so you do not create groups like "5", "4", etc.
+# 2) Remove the dangerous pattern of grouping first and then using str(g).strip() as a dict key (can overwrite teams).
+# 3) Strengthen the "group column looks like a rating column" check using numeric parsing (catches 5.00, "5 ", etc.).
+# 4) Cycle summary page lists only teams that appear in the data (no forced 0-response teams from TEAM_COACH_MAP).
+#
+# Everything else is kept as close as possible to your current behavior.
 
 import os
 import re
@@ -19,7 +27,6 @@ from profiles import SurveyProfile, PROFILES
 
 YES_SET = {"YES", "Y", "TRUE", "1"}
 NO_SET = {"NO", "N", "FALSE", "0"}
-RATING_LIKE_SET = {"1", "2", "3", "4", "5", "1.0", "2.0", "3.0", "4.0", "5.0"}
 
 
 # -----------------------------
@@ -69,6 +76,20 @@ def _format_count_pct_cell(profile: SurveyProfile, team_name: str, count: int) -
     return f"{count} ({pct:.0f}%)"
 
 
+def _fraction_numeric_between_1_and_5(sample: pd.Series) -> float:
+    """
+    Robustly detect if a series looks like ratings by parsing numeric values and checking 1..5.
+    This catches values like 5, 5.0, 5.00, "5 ", etc.
+    """
+    if sample is None or len(sample) == 0:
+        return 0.0
+    s = sample.dropna().astype(str).str.strip()
+    if len(s) == 0:
+        return 0.0
+    nums = pd.to_numeric(s, errors="coerce")
+    return float(nums.between(1, 5).mean())
+
+
 def _assert_profile_and_df_make_sense(profile: SurveyProfile, df: pd.DataFrame) -> None:
     if df is None or df.empty:
         raise ValueError("The Excel sheet is empty or could not be read.")
@@ -95,16 +116,36 @@ def _assert_profile_and_df_make_sense(profile: SurveyProfile, df: pd.DataFrame) 
         .str.strip()
         .head(80)
     )
-    if len(sample) > 0:
-        frac_rating_like = float(sample.isin(list(RATING_LIKE_SET)).mean())
-        # If most values are 1-5, your "group" is pointing at a rating column.
-        if frac_rating_like > 0.60:
-            raise ValueError(
-                "BUG: Your grouping column looks like a 1-5 rating column. "
-                f"group_col_index={profile.group_col_index}, group_col_name='{group_col_name}', "
-                f"rating_like_fraction={frac_rating_like:.2f}. "
-                "Fix profiles.py (group_col_index) or ensure you selected the correct survey_type."
-            )
+
+    # Stronger check than string membership: numeric parsing
+    frac_between_1_5 = _fraction_numeric_between_1_and_5(sample)
+    if frac_between_1_5 > 0.60:
+        raise ValueError(
+            "BUG: Your grouping column looks like a 1-5 rating column. "
+            f"group_col_index={profile.group_col_index}, group_col_name='{group_col_name}', "
+            f"rating_like_fraction={frac_between_1_5:.2f}. "
+            "Fix profiles.py (group_col_index) or ensure you selected the correct survey_type."
+        )
+
+
+def _normalize_group_column_inplace(df: pd.DataFrame, profile: SurveyProfile) -> str:
+    """
+    Normalize the grouping column (Team) BEFORE grouping.
+    - fill NaN
+    - cast to string
+    - strip whitespace
+    - replace empty string with UNASSIGNED
+    Returns the grouping column name.
+    """
+    group_col_name = df.columns[profile.group_col_index]
+    df[group_col_name] = (
+        df[group_col_name]
+        .fillna(profile.unassigned_label)
+        .astype(str)
+        .str.strip()
+    )
+    df.loc[df[group_col_name] == "", group_col_name] = profile.unassigned_label
+    return group_col_name
 
 
 # -----------------------------
@@ -214,9 +255,9 @@ def _filter_low_df_by_max_star(low_df: pd.DataFrame, max_star: int = 2) -> pd.Da
     new_cols: Dict[str, List[str]] = {}
     max_len = 0
 
-    for col in low_df.columns:
+    for colname in low_df.columns:
         filtered: List[str] = []
-        for val in low_df[col]:
+        for val in low_df[colname]:
             s = str(val).strip()
             if not s:
                 continue
@@ -225,16 +266,16 @@ def _filter_low_df_by_max_star(low_df: pd.DataFrame, max_star: int = 2) -> pd.Da
                 rating = int(m.group(1))
                 if rating <= max_star:
                     filtered.append(s)
-        new_cols[col] = filtered
+        new_cols[colname] = filtered
         max_len = max(max_len, len(filtered))
 
     if max_len == 0:
-        for col in new_cols:
-            new_cols[col] = [""]
+        for colname in new_cols:
+            new_cols[colname] = [""]
         return pd.DataFrame(new_cols)
 
-    for col, vals in new_cols.items():
-        new_cols[col] = vals + [""] * (max_len - len(vals))
+    for colname, vals in new_cols.items():
+        new_cols[colname] = vals + [""] * (max_len - len(vals))
 
     return pd.DataFrame(new_cols)
 
@@ -496,12 +537,12 @@ def _add_group_tables_page_to_pdf(
 
         if low_df is not None:
             low_labels = []
-            for col in low_df.columns:
-                num = rating_number_by_name.get(col)
+            for colname in low_df.columns:
+                num = rating_number_by_name.get(colname)
                 if num is not None and profile.chart_labels and num in profile.chart_labels:
                     low_labels.append(profile.chart_labels[num])
                 else:
-                    low_labels.append(str(col))
+                    low_labels.append(str(colname))
 
     no_df = None
     no_labels = None
@@ -513,12 +554,12 @@ def _add_group_tables_page_to_pdf(
         )
         if no_df is not None:
             no_labels = []
-            for col in no_df.columns:
-                num = yesno_number_by_name.get(col)
+            for colname in no_df.columns:
+                num = yesno_number_by_name.get(colname)
                 if num is not None and profile.chart_labels and num in profile.chart_labels:
                     no_labels.append(profile.chart_labels[num])
                 else:
-                    no_labels.append(str(col))
+                    no_labels.append(str(colname))
 
     completion_df = None
     respondents_df = None
@@ -699,7 +740,7 @@ def _add_cycle_summary_page(
 
     group_col_name = df.columns[profile.group_col_index]
 
-    # Extra safety check (this is the exact bug in your screenshot)
+    # Strong safety check again
     sample = (
         df[group_col_name]
         .dropna()
@@ -707,7 +748,8 @@ def _add_cycle_summary_page(
         .str.strip()
         .head(80)
     )
-    if len(sample) > 0 and float(sample.isin(list(RATING_LIKE_SET)).mean()) > 0.60:
+    frac_between_1_5 = _fraction_numeric_between_1_and_5(sample)
+    if frac_between_1_5 > 0.60:
         raise ValueError(
             "BUG: Group column values look like 1-5 ratings, so teams become '5', '4', etc. "
             f"Fix profiles.py: group_col_index currently points to '{group_col_name}'."
@@ -722,8 +764,7 @@ def _add_cycle_summary_page(
 
     stats_by_team: Dict[str, Tuple[int, float]] = {}
 
-    for group_value, group_df in df.groupby(group_col_name, sort=True):
-        team_name = str(group_value).strip()
+    for team_name, group_df in df.groupby(group_col_name, sort=False):
         if team_name == profile.unassigned_label:
             continue
 
@@ -735,9 +776,9 @@ def _add_cycle_summary_page(
         else:
             avg_rating = np.nan
 
-        stats_by_team[team_name] = (n_resp, avg_rating)
+        stats_by_team[str(team_name)] = (n_resp, avg_rating)
 
-    all_team_names = sorted(set(stats_by_team.keys()) | set((profile.team_coach_map or {}).keys()))
+    all_team_names = sorted(stats_by_team.keys())
     if not all_team_names:
         return
 
@@ -843,11 +884,11 @@ def create_pdf_report(
 
     df = pd.read_excel(input_path, sheet_name=0)
 
-    # IMPORTANT: fail fast if your profile points at the wrong "Team" column
+    # Fail fast if your profile points at the wrong "Team" column
     _assert_profile_and_df_make_sense(profile, df)
 
-    group_col_name = df.columns[profile.group_col_index]
-    df[group_col_name] = df[group_col_name].fillna(profile.unassigned_label)
+    # Normalize grouping column BEFORE any groupby
+    group_col_name = _normalize_group_column_inplace(df, profile)
 
     cols = list(df.columns)
     rating_indices = [i for i in (profile.rating_col_indices or []) if i < len(cols)]
@@ -858,8 +899,7 @@ def create_pdf_report(
         qq_idx = rating_indices[6] if len(rating_indices) >= 7 else None
 
     stats_rows: List[Dict[str, Any]] = []
-    for g, group_df in df.groupby(group_col_name, sort=False):
-        team = str(g).strip()
+    for team, group_df in df.groupby(group_col_name, sort=False):
         if team == profile.unassigned_label:
             continue
 
@@ -871,7 +911,7 @@ def create_pdf_report(
         else:
             avg = np.nan
 
-        stats_rows.append({"Team": team, "Count": count, "Avg": avg})
+        stats_rows.append({"Team": str(team), "Count": count, "Avg": avg})
 
     if not stats_rows:
         return output_path
@@ -896,9 +936,8 @@ def create_pdf_report(
     stats_df = stats_df.sort_values("QQIndex", ascending=False, ignore_index=True)
     qq_sorted_teams = list(stats_df["Team"].values)
 
-    grouped: Dict[str, pd.DataFrame] = {
-        str(g).strip(): sub_df for g, sub_df in df.groupby(group_col_name, sort=False)
-    }
+    # Grouped dict now safe because Team column was normalized BEFORE grouping
+    grouped: Dict[str, pd.DataFrame] = {str(team): sub_df for team, sub_df in df.groupby(group_col_name, sort=False)}
 
     with PdfPages(output_path) as pdf:
         _add_cycle_summary_page(pdf, profile, df, cycle_label)
