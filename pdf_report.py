@@ -821,12 +821,16 @@ def _add_cycle_summary_page(
         qq_vals.append(float(rating) * frac)
 
     summary_df["QQIndex"] = qq_vals
-
+    
+    # Sort by QQIndex so bars (and table) are ranked by QQIndex
+    summary_df = summary_df.sort_values("QQIndex", ascending=False, ignore_index=True)
+    
     fig, (ax_table, ax_bar) = plt.subplots(
         1, 2,
         figsize=(11, 8.5),
         gridspec_kw={"width_ratios": [1.2, 1.8]},
     )
+
     fig.suptitle(f"{cycle_label} Summary", fontsize=14, fontweight="bold")
 
     ax_table.axis("off")
