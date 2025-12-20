@@ -48,3 +48,28 @@ if run and uploaded is not None:
                 file_name=os.path.basename(pdf_path),
                 mime="application/pdf",
             )
+            
+st.markdown(
+    """
+    <style>
+    .app-footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        text-align: center;
+        padding: 10px 0;
+        font-size: 14px;
+        color: rgba(49, 51, 63, 0.7);
+        background: white;
+        border-top: 1px solid rgba(49, 51, 63, 0.15);
+        z-index: 999;
+    }
+    </style>
+
+    <div class="app-footer">
+        Program Developed by Rene Barbier for Soccer Central
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
