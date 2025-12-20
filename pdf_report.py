@@ -313,191 +313,342 @@ def _build_plot_metadata(profile: SurveyProfile, df_group: pd.DataFrame) -> List
 # Page: charts grid (page 1 per group)
 # -----------------------------
 
-def _add_group_charts_page_to_pdf(
+def _add_group_tables_page_to_pdf(
     pdf: PdfPages,
     profile: SurveyProfile,
     df_group: pd.DataFrame,
     title_label: str,
     cycle_label: str,
     plots_meta: List[Dict[str, Any]],
+    is_all_teams: bool,
 ) -> None:
-    if not plots_meta:
-        return
+    # -----------------------------
+    # Local helper: split wide tables into multiple pages
+    # -----------------------------
+    def _add_wide_table_pages(
+        section_title: str,
+        table_df: pd.DataFrame,
+        labels: List[str],
+        max_cols_per_page: int = 8,
+        fontsize: int = 8,
+    ) -> None:
+        if table_df is None or table_df.empty:
+            return
 
+        ncols_total = len(table_df.columns)
+        if ncols_total <= 0:
+            return
+
+        page_title = _compose_group_title(profile, title_label, cycle_label) + n_text + " (Details)"
+
+        for start in range(0, ncols_total, max_cols_per_page):
+            end = min(start + max_cols_per_page, ncols_total)
+
+            sub_df = table_df.iloc[:, start:end]
+            sub_labels = labels[start:end]
+
+            fig, ax = plt.subplots(figsize=(11, 8.5))
+            ax.axis("off")
+
+            col_widths = [1.0 / max(len(sub_df.columns), 1)] * len(sub_df.columns)
+
+            tbl = ax.table(
+                cellText=sub_df.values,
+                colLabels=sub_labels,
+                loc="upper left",
+                colWidths=col_widths,
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(fontsize)
+            tbl.scale(1.0, 1.35)
+
+            fig.suptitle(f"{page_title} - {section_title} ({start + 1}-{end})", fontsize=12)
+            fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    # -----------------------------
+    # Counts / labels
+    # -----------------------------
     n_resp = _get_unique_respondent_count(df_group, profile.respondent_name_index)
     noun = profile.respondent_singular if n_resp == 1 else profile.respondent_plural
     n_text = f" ({n_resp} {noun})"
 
-    n_plots = len(plots_meta)
-    ncols = 3
-    nrows = int(np.ceil(n_plots / ncols))
+    rating_indices = [m["idx"] for m in plots_meta if m["ptype"] == "rating"]
+    yesno_indices = [m["idx"] for m in plots_meta if m["ptype"] == "yesno"]
 
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8.5, 11))
+    rating_number_by_name = {m["col_name"]: m["number"] for m in plots_meta if m["ptype"] == "rating"}
+    yesno_number_by_name = {m["col_name"]: m["number"] for m in plots_meta if m["ptype"] == "yesno"}
 
-    if nrows == 1 and ncols == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
-        axes = np.array([axes])
-    axes_flat = axes.flatten()
+    # -----------------------------
+    # Build low ratings table
+    # -----------------------------
+    low_df = None
+    low_labels = None
 
-    for ax in axes_flat[n_plots:]:
-        ax.axis("off")
-
-    y_label = f"{profile.respondent_singular.capitalize()} Count"
-
-    for ax, meta in zip(axes_flat, plots_meta):
-        ptype = meta["ptype"]
-        idx = meta["idx"]
-        col_name = meta["col_name"]
-        number = meta["number"]
-
-        ax.text(
-            0.02, 0.98, str(number),
-            transform=ax.transAxes,
-            ha="left", va="top",
-            fontsize=10, fontweight="bold",
+    if rating_indices:
+        low_df = build_low_ratings_table(
+            df_group,
+            rating_indices=rating_indices,
+            respondent_name_index=profile.respondent_name_index,
+            max_star=3,
         )
 
-        wrapped_name = textwrap.fill(str(col_name), width=40)
+        # All Teams page uses 1-2 stars only
+        if low_df is not None and is_all_teams:
+            low_df = _filter_low_df_by_max_star(low_df, max_star=2)
 
-        if ptype == "rating":
-            series = pd.to_numeric(df_group.iloc[:, idx], errors="coerce").dropna()
-            counts = series.value_counts().reindex([1, 2, 3, 4, 5], fill_value=0)
-            ax.bar(range(1, 6), counts.values)
+        if low_df is not None:
+            low_labels = []
+            for colname in low_df.columns:
+                num = rating_number_by_name.get(colname)
+                if num is not None and profile.chart_labels and num in profile.chart_labels:
+                    low_labels.append(profile.chart_labels[num])
+                else:
+                    low_labels.append(str(colname))
 
-            avg = series.mean() if not series.empty else None
-            title = wrapped_name if avg is None or np.isnan(avg) else f"{wrapped_name}\n(Avg = {avg:.2f})"
+            # IMPORTANT: if too wide (Families: 15 columns), split into multiple pages
+            if len(low_df.columns) > 8:
+                _add_wide_table_pages(
+                    section_title="Low Ratings",
+                    table_df=low_df,
+                    labels=low_labels,
+                    max_cols_per_page=8,
+                    fontsize=8,
+                )
+                # Remove from the combined "Details" page so it does not render tiny
+                low_df = None
+                low_labels = None
 
-            ax.set_title(title, fontsize=8)
-            ax.set_xlabel("# of Stars", fontsize=7)
-            ax.set_ylabel(y_label, fontsize=7)
-            ax.tick_params(labelsize=7)
-            ax.set_ylim(0, max(counts.values.tolist() + [1]) * 1.2)
+    # -----------------------------
+    # Build NO answers table
+    # -----------------------------
+    no_df = None
+    no_labels = None
 
-        elif ptype == "yesno":
-            series = _clean_series_as_str_keep_len(df_group.iloc[:, idx]).str.upper()
-            yes_count = int(series.isin(YES_SET).sum())
-            no_count = int(series.isin(NO_SET).sum())
+    if yesno_indices:
+        no_df = build_no_answers_table(
+            df_group,
+            yesno_indices=yesno_indices,
+            respondent_name_index=profile.respondent_name_index,
+        )
 
-            data = [yes_count, no_count]
-            labels = ["YES", "NO"]
+        if no_df is not None:
+            no_labels = []
+            for colname in no_df.columns:
+                num = yesno_number_by_name.get(colname)
+                if num is not None and profile.chart_labels and num in profile.chart_labels:
+                    no_labels.append(profile.chart_labels[num])
+                else:
+                    no_labels.append(str(colname))
 
-            if yes_count + no_count == 0:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
-                ax.axis("off")
+    # -----------------------------
+    # Completion/respondents/comments
+    # -----------------------------
+    completion_df = None
+    respondents_df = None
+    comments_df = None
+
+    if is_all_teams:
+        completion_df = pd.DataFrame(
+            {"Metric": [f"{profile.respondent_plural.capitalize()} who completed this survey"], "Value": [n_resp]}
+        )
+    else:
+        respondents_df = _build_all_respondents_grid(
+            df_group,
+            respondent_name_index=profile.respondent_name_index,
+            max_cols=6,
+        )
+        comments_df = _build_comments_table(df_group, respondent_name_index=profile.respondent_name_index)
+
+    # If nothing to show on the combined page, stop here
+    if (
+        low_df is None and
+        no_df is None and
+        completion_df is None and
+        respondents_df is None and
+        comments_df is None
+    ):
+        return
+
+    # -----------------------------
+    # Decide sections and layout for the combined page
+    # -----------------------------
+    sections: List[str] = []
+    if low_df is not None:
+        sections.append("low")
+    if no_df is not None:
+        sections.append("no")
+
+    if is_all_teams:
+        if completion_df is not None:
+            sections.append("completion")
+    else:
+        if respondents_df is not None:
+            sections.append("respondents")
+        if comments_df is not None:
+            sections.append("comments")
+
+    height_ratios: List[float] = []
+    for s in sections:
+        if s == "low":
+            height_ratios.append(1.1)
+        elif s == "no":
+            height_ratios.append(0.9)
+        elif s == "completion":
+            height_ratios.append(0.8)
+        elif s == "respondents":
+            height_ratios.append(1.3)
+        elif s == "comments":
+            height_ratios.append(1.6)
+
+    fig, axes = plt.subplots(
+        nrows=len(sections),
+        ncols=1,
+        figsize=(11, 8.5),
+        gridspec_kw={"height_ratios": height_ratios},
+    )
+    if len(sections) == 1:
+        axes = [axes]
+
+    row_idx = 0
+
+    # -----------------------------
+    # Low ratings (only if not split into separate pages)
+    # -----------------------------
+    if low_df is not None:
+        ax = axes[row_idx]
+        ax.axis("off")
+
+        ncols_low = len(low_df.columns)
+        col_widths = [1.0 / max(ncols_low, 1)] * ncols_low
+
+        table = ax.table(
+            cellText=low_df.values,
+            colLabels=low_labels if low_labels is not None else low_df.columns,
+            loc="upper left",
+            colWidths=col_widths,
+        )
+        table.auto_set_font_size(False)
+
+        if ncols_low <= 10:
+            table.set_fontsize(7)
+        elif ncols_low <= 16:
+            table.set_fontsize(6)
+        else:
+            table.set_fontsize(5)
+
+        table.scale(1.0, 1.15)
+
+        ax.set_title(
+            "1-2 Star Reviews (columns = chart numbers)" if is_all_teams else "1-3 Star Reviews (columns = chart numbers)",
+            fontsize=10,
+            pad=6,
+        )
+        row_idx += 1
+
+    # -----------------------------
+    # NO replies
+    # -----------------------------
+    if no_df is not None:
+        ax = axes[row_idx]
+        ax.axis("off")
+
+        ncols_no = len(no_df.columns)
+        col_widths = [1.0 / max(ncols_no, 1)] * ncols_no
+
+        table = ax.table(
+            cellText=no_df.values,
+            colLabels=no_labels if no_labels is not None else no_df.columns,
+            loc="upper left",
+            colWidths=col_widths,
+        )
+        table.auto_set_font_size(False)
+
+        if ncols_no <= 10:
+            table.set_fontsize(7)
+        elif ncols_no <= 16:
+            table.set_fontsize(6)
+        else:
+            table.set_fontsize(5)
+
+        table.scale(1.0, 1.15)
+        ax.set_title('"NO" Replies (columns = chart numbers)', fontsize=10, pad=6)
+        row_idx += 1
+
+    # -----------------------------
+    # Completion summary (All Teams only)
+    # -----------------------------
+    if is_all_teams and completion_df is not None:
+        ax = axes[row_idx]
+        ax.axis("off")
+        table = ax.table(
+            cellText=completion_df.values,
+            colLabels=completion_df.columns,
+            loc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(11)
+        table.scale(1.2, 1.5)
+        ax.set_title("Survey completion summary", fontsize=10, pad=4)
+        row_idx += 1
+
+    # -----------------------------
+    # Respondents grid (team pages only)
+    # -----------------------------
+    if (not is_all_teams) and (respondents_df is not None):
+        ax = axes[row_idx]
+        ax.axis("off")
+        table = ax.table(
+            cellText=respondents_df.values,
+            colLabels=respondents_df.columns,
+            loc="upper left",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1.0, 1.6)
+        ax.set_title(f"{profile.respondent_plural.capitalize()} who completed this survey", fontsize=10, pad=4)
+        row_idx += 1
+
+    # -----------------------------
+    # Comments table (team pages only)
+    # -----------------------------
+    if (not is_all_teams) and (comments_df is not None):
+        ax = axes[row_idx]
+        ax.axis("off")
+        table = ax.table(
+            cellText=comments_df.values,
+            colLabels=comments_df.columns,
+            loc="upper left",
+            colWidths=[0.12, 0.88],
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1.05, 2.2)
+
+        for (r, c), cell in table.get_celld().items():
+            if r == 0:
+                cell.set_text_props(ha="center", va="center", fontweight="bold")
+                continue
+            if c == 0:
+                cell.set_text_props(ha="center", va="top")
             else:
-                def make_label(pct, allvals=data):
-                    total = sum(allvals)
-                    count = int(round(pct * total / 100.0)) if total else 0
-                    return f"{pct:.0f}%, {count}"
+                txt = cell.get_text()
+                txt.set_wrap(True)
+                txt.set_ha("left")
+                txt.set_va("top")
+                cell.PAD = 0.02
 
-                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 7})
-                ax.set_title(wrapped_name, fontsize=8)
+        ax.set_title("Comments and Suggestions", fontsize=10, pad=6)
 
-        elif ptype == "choice":
-            series = df_group.iloc[:, idx].dropna().astype(str).str.strip()
-            counts = series.value_counts()
-            data = counts.values
-            labels = counts.index.tolist()
-
-            if len(data) == 0:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
-                ax.axis("off")
-            else:
-                def make_label(pct, allvals=data):
-                    total = sum(allvals)
-                    count = int(round(pct * total / 100.0)) if total else 0
-                    return f"{pct:.0f}%, {count}"
-
-                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 7})
-                ax.set_title(wrapped_name, fontsize=8)
-
-    full_title = _compose_group_title(profile, title_label, cycle_label) + n_text
+    full_title = _compose_group_title(profile, title_label, cycle_label) + n_text + " (Details)"
     fig.suptitle(full_title, fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.tight_layout(rect=[0, 0.03, 1, 0.9])
+    fig.subplots_adjust(hspace=0.55)
     pdf.savefig(fig)
     plt.close(fig)
 
-
-# -----------------------------
-# Respondent grid + comments
-# -----------------------------
-
-def _build_all_respondents_grid(
-    df_group: pd.DataFrame,
-    respondent_name_index: int,
-    max_cols: int = 6,
-) -> Optional[pd.DataFrame]:
-    if respondent_name_index < 0 or respondent_name_index >= len(df_group.columns):
-        return None
-
-    names = _clean_series_as_str_dropna(df_group.iloc[:, respondent_name_index])
-    names = names[names != ""].drop_duplicates()
-
-    if names.empty:
-        return None
-
-    n = len(names)
-    ncols = min(max_cols, n)
-    nrows = int(np.ceil(n / ncols))
-
-    grid = [["" for _ in range(ncols)] for _ in range(nrows)]
-    i = 0
-    for c in range(ncols):
-        for r in range(nrows):
-            if i >= n:
-                break
-            grid[r][c] = names.iloc[i]
-            i += 1
-
-    col_labels = [f"Respondents {i+1}" for i in range(ncols)]
-    out = pd.DataFrame(grid, columns=col_labels)
-    out = out[(out != "").any(axis=1)]
-    return out
-
-
-def _build_comments_table(
-    df_group: pd.DataFrame,
-    respondent_name_index: int,
-) -> Optional[pd.DataFrame]:
-    if respondent_name_index < 0 or respondent_name_index >= len(df_group.columns):
-        return None
-
-    cols = list(df_group.columns)
-    comment_indices: List[int] = []
-    for i, name in enumerate(cols):
-        nl = str(name).lower()
-        if "comment" in nl or "suggest" in nl:
-            comment_indices.append(i)
-
-    if not comment_indices:
-        return None
-
-    rows: List[List[str]] = []
-
-    who_all = _clean_series_as_str_keep_len(df_group.iloc[:, respondent_name_index])
-
-    for row_i in range(len(df_group)):
-        who = str(who_all.iloc[row_i]).strip()
-        if not who:
-            continue
-
-        for idx in comment_indices:
-            val = df_group.iloc[row_i, idx]
-            if pd.isna(val):
-                continue
-            txt = str(val).strip()
-            if not txt:
-                continue
-
-            col_label = str(cols[idx])
-            text_final = f"[{col_label}] {txt}" if len(comment_indices) > 1 else txt
-            rows.append([who, text_final])
-
-    if not rows:
-        return None
-
-    return pd.DataFrame(rows, columns=["Respondent", "Comment / Suggestion"])
 
 
 # -----------------------------
