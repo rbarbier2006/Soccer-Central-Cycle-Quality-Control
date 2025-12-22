@@ -426,8 +426,14 @@ def _add_group_charts_page_to_pdf(
 def _build_all_respondents_grid(
     df_group: pd.DataFrame,
     respondent_name_index: int,
-    max_cols: int = 6,
+    max_cols: int = 8,
 ) -> Optional[pd.DataFrame]:
+    """
+    Builds a grid of respondent names:
+    - Up to max_cols names per row (default 8)
+    - Adds a new row ONLY when the previous row is full
+    - No "Respondents #" headers (we will render without colLabels)
+    """
     if respondent_name_index < 0 or respondent_name_index >= len(df_group.columns):
         return None
 
@@ -439,21 +445,18 @@ def _build_all_respondents_grid(
 
     n = len(names)
     ncols = min(max_cols, n)
-    nrows = int(np.ceil(n / ncols))
 
-    grid = [["" for _ in range(ncols)] for _ in range(nrows)]
-    i = 0
-    for c in range(ncols):
-        for r in range(nrows):
-            if i >= n:
-                break
-            grid[r][c] = names.iloc[i]
-            i += 1
+    # Row-major chunking: fills row 1 first, then row 2, etc.
+    rows: List[List[str]] = []
+    for i in range(0, n, ncols):
+        chunk = names.iloc[i : i + ncols].tolist()
+        # pad last row to full width so the table stays rectangular
+        chunk += [""] * (ncols - len(chunk))
+        rows.append(chunk)
 
-    col_labels = [f"Respondents {i+1}" for i in range(ncols)]
-    out = pd.DataFrame(grid, columns=col_labels)
-    out = out[(out != "").any(axis=1)]
-    return out
+    # Columns exist only to satisfy DataFrame shape; we won't render headers anyway.
+    return pd.DataFrame(rows, columns=[""] * ncols)
+
 
 
 def _build_comments_table(
