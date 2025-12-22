@@ -293,8 +293,17 @@ def _add_group_charts_page_to_pdf(
     n_text = f" ({n_resp} {noun})"
 
     n_plots = len(plots_meta)
-    ncols = 3
+    
+    # Families has 16 plots -> force 4x4 instead of 6x3
+    if n_plots <= 9:
+        ncols = 3
+    elif n_plots <= 16:
+        ncols = 4
+    else:
+        ncols = 5  # fallback if you ever add more questions
+    
     nrows = int(np.ceil(n_plots / ncols))
+
 
     # Landscape letter
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(11, 8.5))
