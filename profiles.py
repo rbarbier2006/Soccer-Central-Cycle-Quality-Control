@@ -47,7 +47,7 @@ class SurveyProfile:
 
 
 # -----------------------------
-# Shared team metadata (same as your old code)
+# Shared team metadata
 # -----------------------------
 
 TEAM_COACH_MAP: Dict[str, str] = {
@@ -122,7 +122,7 @@ TEAM_ROSTER_SIZE: Dict[str, int] = {
 
 
 # -----------------------------
-# Players profile (based on your column layout)
+# Players profile
 # -----------------------------
 # Players:
 # F = Player Name
@@ -131,14 +131,12 @@ TEAM_ROSTER_SIZE: Dict[str, int] = {
 # M-N = yes/no (2)
 # O = multiple choice (1)
 # P-Q = ratings (2)
-# R = comments (auto-detected by header; no index needed here)
+# R = comments
 
 PLAYERS_RATING_COLS = tuple([col("H"), col("I"), col("J"), col("K"), col("L"), col("P"), col("Q")])
 PLAYERS_YESNO_COLS = tuple([col("M"), col("N")])
 PLAYERS_CHOICE_COL = col("O")
 
-# Chart labels only for the first 7 charts (your old meaning).
-# If you want labels for yes/no and choice too, we can add them.
 PLAYERS_CHART_LABELS: Dict[int, str] = {
     1: "(1)Safety and Support",
     2: "(2)Improvement",
@@ -159,8 +157,6 @@ PLAYERS_PROFILE = SurveyProfile(
     rating_col_indices=PLAYERS_RATING_COLS,
     yesno_col_indices=PLAYERS_YESNO_COLS,
     choice_col_index=PLAYERS_CHOICE_COL,
-    # QQ should be "Overall Experience". In your old logic that was rating #7.
-    # With the layout you gave, rating #7 is column Q.
     qq_rating_col_index=col("Q"),
     team_coach_map=TEAM_COACH_MAP,
     denominator_map=TEAM_ROSTER_SIZE,
@@ -169,36 +165,52 @@ PLAYERS_PROFILE = SurveyProfile(
 
 
 # -----------------------------
-# Families profile (based on your column layout + the Team column assumption)
+# Families profile
 # -----------------------------
 # Families:
-# G = Player Name (used as the "respondent" label in the report)
-# H = Player Team (ASSUMED; needed for grouping)
+# G = Player Name (respondent label)
+# H = Player Team (grouping)
 # I-J = ratings (2)
-# K = yes/no (1)
+# K = yes/no (1)   -> this becomes Q16 in your report numbering
 # L-X = ratings (13)
-# Y = comments (auto-detected by header)
+# Y = comments
 
 FAMILIES_RATING_COLS = tuple([col("I"), col("J")] + list(range(col("L"), col("X") + 1)))
 FAMILIES_YESNO_COLS = tuple([col("K")])
 
-# You told me: "for first page, consider column Q, overall satisfaction"
-# Q exists inside L-X, so we set QQ column to Q.
+FAMILIES_CHART_LABELS: Dict[int, str] = {
+    1:  "(1)Coaching Qual.",
+    2:  "(2)Comm. clarity",
+    3:  "(3)Value/cost",
+    4:  "(4)Safe/clean",
+    5:  "(5)Comm. matches",
+    6:  "(6)Scheduling",
+    7:  "(7)Events Exp.",
+    8:  "(8)Satisfaction",
+    9:  "(9)Discipline",
+    10: "(10)Wellbeing",
+    11: "(11)Resilience",
+    12: "(12)Growth Mind.",
+    13: "(13)Teamwork",
+    14: "(14)Values",
+    15: "(15)Recommend",
+    16: "(16)24h reply",
+}
+
 FAMILIES_PROFILE = SurveyProfile(
     key="families",
     title="Families Survey",
     respondent_singular="family",
     respondent_plural="families",
     respondent_name_index=col("G"),
-    group_col_index=col("H"),  # change this if your Team column is different
+    group_col_index=col("H"),  # change if your Team column is different
     rating_col_indices=FAMILIES_RATING_COLS,
     yesno_col_indices=FAMILIES_YESNO_COLS,
     choice_col_index=None,
     qq_rating_col_index=col("Q"),
     team_coach_map=TEAM_COACH_MAP,
     denominator_map=TEAM_ROSTER_SIZE,
-    # If you don't want short labels, set this to None and it will show full question headers.
-    chart_labels={i: f"({i})Q{i}" for i in range(1, len(FAMILIES_RATING_COLS) + len(FAMILIES_YESNO_COLS) + 1)},
+    chart_labels=FAMILIES_CHART_LABELS,
 )
 
 
