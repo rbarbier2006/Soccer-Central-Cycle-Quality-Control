@@ -293,31 +293,43 @@ def _add_group_charts_page_to_pdf(
     n_text = f" ({n_resp} {noun})"
 
     n_plots = len(plots_meta)
-    
-    # Families has 16 plots -> force 4x4 instead of 6x3
-    if n_plots <= 9:
+
+    # Grid rule:
+    # - Up to 4 plots: 2 columns
+    # - 5 to 9 plots: 3 columns
+    # - 10+ plots: 4 columns (Families 16 -> 4x4)
+    if n_plots <= 4:
+        ncols = 2
+    elif n_plots <= 9:
         ncols = 3
-    elif n_plots <= 16:
-        ncols = 4
     else:
-        ncols = 5  # fallback if you ever add more questions
-    
+        ncols = 4
+
     nrows = int(np.ceil(n_plots / ncols))
 
-
-    # Landscape letter
+    # IMPORTANT: landscape so it matches the other pages' "size"
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(11, 8.5))
 
-    if nrows == 1 and ncols == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
-        axes = np.array([axes])
+    axes = np.array(axes)
+    if axes.ndim == 0:
+        axes = axes.reshape(1, 1)
+    elif axes.ndim == 1:
+        # One row or one column
+        if nrows == 1:
+            axes = axes.reshape(1, ncols)
+        else:
+            axes = axes.reshape(nrows, 1)
+
     axes_flat = axes.flatten()
 
+    # Turn off unused axes
     for ax in axes_flat[n_plots:]:
         ax.axis("off")
 
     y_label = f"{profile.respondent_singular.capitalize()} Count"
+
+    # Title wrap tighter when there are 4 columns
+    wrap_width = 26 if ncols == 4 else 40
 
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
@@ -325,6 +337,7 @@ def _add_group_charts_page_to_pdf(
         col_name = meta["col_name"]
         number = meta["number"]
 
+        # Big chart number in corner
         ax.text(
             0.02, 0.98, str(number),
             transform=ax.transAxes,
@@ -332,20 +345,31 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        wrapped_name = textwrap.fill(str(col_name), width=40)
+        # Use profile.chart_labels when available
+        display_title = None
+        if profile.chart_labels and number in profile.chart_labels:
+            display_title = str(profile.chart_labels[number])
+        else:
+            display_title = str(col_name)
+
+        wrapped_title = textwrap.fill(display_title, width=wrap_width)
 
         if ptype == "rating":
             series = pd.to_numeric(df_group.iloc[:, idx], errors="coerce").dropna()
             counts = series.value_counts().reindex([1, 2, 3, 4, 5], fill_value=0)
-            ax.bar(range(1, 6), counts.values)
+
+            ax.bar([1, 2, 3, 4, 5], counts.values)
 
             avg = series.mean() if not series.empty else None
-            title = wrapped_name if avg is None or np.isnan(avg) else f"{wrapped_name}\n(Avg = {avg:.2f})"
+            if avg is None or np.isnan(avg):
+                title = wrapped_title
+            else:
+                title = f"{wrapped_title}\n(Avg = {avg:.2f})"
 
-            ax.set_title(title, fontsize=8)
-            ax.set_xlabel("# of Stars", fontsize=7)
-            ax.set_ylabel(y_label, fontsize=7)
-            ax.tick_params(labelsize=7)
+            ax.set_title(title, fontsize=9)
+            ax.set_xlabel("# of Stars", fontsize=8)
+            ax.set_ylabel(y_label, fontsize=8)
+            ax.tick_params(labelsize=8)
             ax.set_ylim(0, max(counts.values.tolist() + [1]) * 1.2)
 
         elif ptype == "yesno":
@@ -357,7 +381,7 @@ def _add_group_charts_page_to_pdf(
             labels = ["YES", "NO"]
 
             if yes_count + no_count == 0:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=9)
                 ax.axis("off")
             else:
                 def make_label(pct, allvals=data):
@@ -365,8 +389,8 @@ def _add_group_charts_page_to_pdf(
                     count = int(round(pct * total / 100.0)) if total else 0
                     return f"{pct:.0f}%, {count}"
 
-                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 7})
-                ax.set_title(wrapped_name, fontsize=8)
+                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
+                ax.set_title(wrapped_title, fontsize=9)
 
         elif ptype == "choice":
             series = df_group.iloc[:, idx].dropna().astype(str).str.strip()
@@ -375,7 +399,7 @@ def _add_group_charts_page_to_pdf(
             labels = counts.index.tolist()
 
             if len(data) == 0:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=9)
                 ax.axis("off")
             else:
                 def make_label(pct, allvals=data):
@@ -383,14 +407,17 @@ def _add_group_charts_page_to_pdf(
                     count = int(round(pct * total / 100.0)) if total else 0
                     return f"{pct:.0f}%, {count}"
 
-                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 7})
-                ax.set_title(wrapped_name, fontsize=8)
+                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
+                ax.set_title(wrapped_title, fontsize=9)
 
     full_title = _compose_group_title(profile, title_label, cycle_label) + n_text
-    fig.suptitle(full_title, fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.suptitle(full_title, fontsize=14, fontweight="bold")
+
+    # Leave space for the suptitle
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
     pdf.savefig(fig)
     plt.close(fig)
+
 
 
 # -----------------------------
