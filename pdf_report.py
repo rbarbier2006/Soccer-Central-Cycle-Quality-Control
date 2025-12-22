@@ -603,27 +603,46 @@ def _add_group_tables_page_to_pdf(
     # Helper to draw a table
     # -----------------------------
     def _draw_table(ax, df, labels, title, fontsize=8, scale_y=1.35, col_widths=None, wrap=False):
+        """
+        Draw a matplotlib table.
+        - If labels is None or [], the header row is removed (useful for the Respondents grid).
+        """
         ax.axis("off")
+    
+        if df is None or getattr(df, "empty", False):
+            return None
+    
         ncols = df.shape[1]
         if col_widths is None:
             col_widths = [1.0 / max(ncols, 1)] * ncols
-
-        tbl = ax.table(
+    
+        table_kwargs = dict(
             cellText=df.values,
-            colLabels=labels,
             loc="upper left",
             colWidths=col_widths,
         )
+    
+        # Only include a header row if labels were provided
+        if labels is not None and len(labels) > 0:
+            table_kwargs["colLabels"] = labels
+    
+        tbl = ax.table(**table_kwargs)
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(fontsize)
         tbl.scale(1.0, scale_y)
-        ax.set_title(title, fontsize=10, pad=6)
-
+    
+        if title:
+            ax.set_title(title, fontsize=10, pad=6)
+    
         if wrap:
+            has_header = labels is not None and len(labels) > 0
             for (r, c), cell in tbl.get_celld().items():
-                if r == 0:
+                # Header formatting (only if header exists)
+                if has_header and r == 0:
                     cell.set_text_props(ha="center", va="center", fontweight="bold")
                     continue
+    
+                # Body formatting
                 if c == 0:
                     cell.set_text_props(ha="center", va="top")
                 else:
@@ -632,6 +651,9 @@ def _add_group_tables_page_to_pdf(
                     txt.set_ha("left")
                     txt.set_va("top")
                     cell.PAD = 0.02
+    
+        return tbl
+
 
     # -----------------------------
     # WIDE low_df: split into chunks of 8 columns
