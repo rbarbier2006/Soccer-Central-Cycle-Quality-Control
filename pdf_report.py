@@ -1,5 +1,4 @@
 # pdf_report.py
-
 import os
 import re
 import textwrap
@@ -12,11 +11,9 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from profiles import SurveyProfile, PROFILES
 
-
 # -----------------------------
 # Constants
 # -----------------------------
-
 YES_SET = {"YES", "Y", "TRUE", "1"}
 NO_SET = {"NO", "N", "FALSE", "0"}
 
@@ -24,13 +21,11 @@ NO_SET = {"NO", "N", "FALSE", "0"}
 # -----------------------------
 # Small helpers
 # -----------------------------
-
 def _clean_series_as_str_dropna(s: pd.Series) -> pd.Series:
     return s.dropna().astype(str).str.strip()
 
 
 def _clean_series_as_str_keep_len(s: pd.Series) -> pd.Series:
-    # Keep row alignment; empty string for NaN.
     return s.fillna("").astype(str).str.strip()
 
 
@@ -69,10 +64,6 @@ def _format_count_pct_cell(profile: SurveyProfile, team_name: str, count: int) -
 
 
 def _fraction_numeric_between_1_and_5(sample: pd.Series) -> float:
-    """
-    Robustly detect if a series looks like ratings by parsing numeric values and checking 1..5.
-    Catches values like 5, 5.0, 5.00, "5 ", etc.
-    """
     if sample is None or len(sample) == 0:
         return 0.0
     s = sample.dropna().astype(str).str.strip()
@@ -101,18 +92,11 @@ def _assert_profile_and_df_make_sense(profile: SurveyProfile, df: pd.DataFrame) 
         )
 
     group_col_name = df.columns[profile.group_col_index]
-    sample = (
-        df[group_col_name]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .head(80)
-    )
-
+    sample = df[group_col_name].dropna().astype(str).str.strip().head(80)
     frac_between_1_5 = _fraction_numeric_between_1_and_5(sample)
     if frac_between_1_5 > 0.60:
         raise ValueError(
-            "BUG: Your grouping column looks like a 1-5 rating column (teams become '5', '4', etc). "
+            "BUG: Your grouping column looks like a 1-5 rating column. "
             f"group_col_index={profile.group_col_index}, group_col_name='{group_col_name}', "
             f"rating_like_fraction={frac_between_1_5:.2f}. "
             "Fix profiles.py (group_col_index) or ensure you selected the correct survey_type."
@@ -120,13 +104,6 @@ def _assert_profile_and_df_make_sense(profile: SurveyProfile, df: pd.DataFrame) 
 
 
 def _normalize_group_column_inplace(df: pd.DataFrame, profile: SurveyProfile) -> str:
-    """
-    Normalize the grouping column (Team) BEFORE grouping.
-    - fill NaN
-    - cast to string
-    - strip whitespace
-    - replace empty string with UNASSIGNED
-    """
     group_col_name = df.columns[profile.group_col_index]
     df[group_col_name] = (
         df[group_col_name]
@@ -141,7 +118,6 @@ def _normalize_group_column_inplace(df: pd.DataFrame, profile: SurveyProfile) ->
 # -----------------------------
 # Builders for low ratings / NO answers
 # -----------------------------
-
 def build_low_ratings_table(
     df_group: pd.DataFrame,
     rating_indices: List[int],
@@ -272,7 +248,6 @@ def _filter_low_df_by_max_star(low_df: pd.DataFrame, max_star: int = 2) -> pd.Da
 # -----------------------------
 # Plot metadata
 # -----------------------------
-
 def _build_plot_metadata(profile: SurveyProfile, df_group: pd.DataFrame) -> List[Dict[str, Any]]:
     cols = list(df_group.columns)
 
@@ -299,9 +274,9 @@ def _build_plot_metadata(profile: SurveyProfile, df_group: pd.DataFrame) -> List
 
 
 # -----------------------------
-# Page: charts grid (landscape so it's same "size" as the rest)
+# Page: charts grid (page 1 per group)
+# (LANDSCAPE so it's same size as the other pages)
 # -----------------------------
-
 def _add_group_charts_page_to_pdf(
     pdf: PdfPages,
     profile: SurveyProfile,
@@ -318,28 +293,22 @@ def _add_group_charts_page_to_pdf(
     n_text = f" ({n_resp} {noun})"
 
     n_plots = len(plots_meta)
-
-    # Landscape Letter, matching other pages
-    fig_w, fig_h = 11, 8.5
-
-    # 4 columns uses landscape space better
-    ncols = 4
+    ncols = 3
     nrows = int(np.ceil(n_plots / ncols))
 
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h))
+    # Landscape letter
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(11, 8.5))
 
     if nrows == 1 and ncols == 1:
         axes = np.array([[axes]])
     elif nrows == 1:
         axes = np.array([axes])
-
     axes_flat = axes.flatten()
 
     for ax in axes_flat[n_plots:]:
         ax.axis("off")
 
     y_label = f"{profile.respondent_singular.capitalize()} Count"
-    wrap_width = 28
 
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
@@ -354,7 +323,7 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        wrapped_name = textwrap.fill(str(col_name), width=wrap_width)
+        wrapped_name = textwrap.fill(str(col_name), width=40)
 
         if ptype == "rating":
             series = pd.to_numeric(df_group.iloc[:, idx], errors="coerce").dropna()
@@ -364,21 +333,22 @@ def _add_group_charts_page_to_pdf(
             avg = series.mean() if not series.empty else None
             title = wrapped_name if avg is None or np.isnan(avg) else f"{wrapped_name}\n(Avg = {avg:.2f})"
 
-            ax.set_title(title, fontsize=9)
-            ax.set_xlabel("# of Stars", fontsize=8)
-            ax.set_ylabel(y_label, fontsize=8)
-            ax.tick_params(labelsize=8)
-            ax.set_ylim(0, max(counts.values.tolist() + [1]) * 1.15)
+            ax.set_title(title, fontsize=8)
+            ax.set_xlabel("# of Stars", fontsize=7)
+            ax.set_ylabel(y_label, fontsize=7)
+            ax.tick_params(labelsize=7)
+            ax.set_ylim(0, max(counts.values.tolist() + [1]) * 1.2)
 
         elif ptype == "yesno":
             series = _clean_series_as_str_keep_len(df_group.iloc[:, idx]).str.upper()
             yes_count = int(series.isin(YES_SET).sum())
             no_count = int(series.isin(NO_SET).sum())
+
             data = [yes_count, no_count]
             labels = ["YES", "NO"]
 
             if yes_count + no_count == 0:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=9)
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
                 ax.axis("off")
             else:
                 def make_label(pct, allvals=data):
@@ -386,8 +356,8 @@ def _add_group_charts_page_to_pdf(
                     count = int(round(pct * total / 100.0)) if total else 0
                     return f"{pct:.0f}%, {count}"
 
-                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
-                ax.set_title(wrapped_name, fontsize=9)
+                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 7})
+                ax.set_title(wrapped_name, fontsize=8)
 
         elif ptype == "choice":
             series = df_group.iloc[:, idx].dropna().astype(str).str.strip()
@@ -396,7 +366,7 @@ def _add_group_charts_page_to_pdf(
             labels = counts.index.tolist()
 
             if len(data) == 0:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=9)
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
                 ax.axis("off")
             else:
                 def make_label(pct, allvals=data):
@@ -404,21 +374,19 @@ def _add_group_charts_page_to_pdf(
                     count = int(round(pct * total / 100.0)) if total else 0
                     return f"{pct:.0f}%, {count}"
 
-                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
-                ax.set_title(wrapped_name, fontsize=9)
+                ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 7})
+                ax.set_title(wrapped_name, fontsize=8)
 
     full_title = _compose_group_title(profile, title_label, cycle_label) + n_text
-    fig.suptitle(full_title, fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=[0.02, 0.03, 0.98, 0.92])
-
+    fig.suptitle(full_title, fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
     pdf.savefig(fig)
     plt.close(fig)
 
 
 # -----------------------------
-# Respondent grid + comments (team pages)
+# Respondents grid + comments
 # -----------------------------
-
 def _build_all_respondents_grid(
     df_group: pd.DataFrame,
     respondent_name_index: int,
@@ -497,8 +465,9 @@ def _build_comments_table(
 
 # -----------------------------
 # Page: tables (page 2 per group)
+# Includes "two blocks" behavior for Families:
+# Low Ratings split into 1-8 and 9-16, where 16 is NO replies merged in.
 # -----------------------------
-
 def _add_group_tables_page_to_pdf(
     pdf: PdfPages,
     profile: SurveyProfile,
@@ -518,45 +487,8 @@ def _add_group_tables_page_to_pdf(
     rating_number_by_name = {m["col_name"]: m["number"] for m in plots_meta if m["ptype"] == "rating"}
     yesno_number_by_name = {m["col_name"]: m["number"] for m in plots_meta if m["ptype"] == "yesno"}
 
-    # Helper to split wide tables into multiple PDF pages (so names stay readable)
-    def _save_wide_table_as_pages(section_title: str, table_df: pd.DataFrame, labels: List[str], max_cols_per_page: int) -> None:
-        if table_df is None or table_df.empty:
-            return
-        ncols_total = len(table_df.columns)
-        if ncols_total <= max_cols_per_page:
-            return
-
-        base_title = _compose_group_title(profile, title_label, cycle_label) + n_text + " (Details)"
-
-        for start in range(0, ncols_total, max_cols_per_page):
-            end = min(start + max_cols_per_page, ncols_total)
-            sub_df = table_df.iloc[:, start:end]
-            sub_labels = labels[start:end]
-
-            fig, ax = plt.subplots(figsize=(11, 8.5))
-            ax.axis("off")
-
-            col_widths = [1.0 / max(len(sub_df.columns), 1)] * len(sub_df.columns)
-
-            tbl = ax.table(
-                cellText=sub_df.values,
-                colLabels=sub_labels,
-                loc="upper left",
-                colWidths=col_widths,
-            )
-            tbl.auto_set_font_size(False)
-            tbl.set_fontsize(8)
-            tbl.scale(1.0, 1.35)
-
-            fig.suptitle(f"{base_title} - {section_title} ({start+1}-{end})", fontsize=12, fontweight="bold")
-            fig.tight_layout(rect=[0.02, 0.03, 0.98, 0.92])
-
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    # ---- Low ratings table
     low_df = None
-    low_labels = None
+    low_labels: Optional[List[str]] = None
     if rating_indices:
         low_df = build_low_ratings_table(
             df_group,
@@ -576,15 +508,8 @@ def _add_group_tables_page_to_pdf(
                 else:
                     low_labels.append(str(colname))
 
-            # If wide (Families often 15 cols), split into multiple pages and remove from combined page
-            _save_wide_table_as_pages("Low Ratings", low_df, low_labels, max_cols_per_page=8)
-            if len(low_df.columns) > 8:
-                low_df = None
-                low_labels = None
-
-    # ---- NO replies table
     no_df = None
-    no_labels = None
+    no_labels: Optional[List[str]] = None
     if yesno_indices:
         no_df = build_no_answers_table(
             df_group,
@@ -600,16 +525,9 @@ def _add_group_tables_page_to_pdf(
                 else:
                     no_labels.append(str(colname))
 
-            _save_wide_table_as_pages('"NO" Replies', no_df, no_labels, max_cols_per_page=10)
-            if len(no_df.columns) > 10:
-                no_df = None
-                no_labels = None
-
-    # ---- Completion / respondents / comments
     completion_df = None
     respondents_df = None
     comments_df = None
-
     if is_all_teams:
         completion_df = pd.DataFrame(
             {"Metric": [f"{profile.respondent_plural.capitalize()} who completed this survey"], "Value": [n_resp]}
@@ -622,6 +540,7 @@ def _add_group_tables_page_to_pdf(
         )
         comments_df = _build_comments_table(df_group, respondent_name_index=profile.respondent_name_index)
 
+    # Nothing to render
     if (
         low_df is None and
         no_df is None and
@@ -631,13 +550,171 @@ def _add_group_tables_page_to_pdf(
     ):
         return
 
-    # Build sections list
+    full_title_base = _compose_group_title(profile, title_label, cycle_label) + n_text + " (Details)"
+
+    # --- If low ratings table is wide, split into two blocks/pages:
+    # Block A: columns 1-8
+    # Block B: columns 9-16 (where 16 is NO replies merged into the last block if it fits)
+    MAX_COLS_PER_BLOCK = 8
+    if low_df is not None and len(low_df.columns) > MAX_COLS_PER_BLOCK:
+        ncols_total = len(low_df.columns)
+
+        # Prepare NO replies columns to merge into the LAST block if there is room.
+        no_remaining_df = no_df
+        no_remaining_labels = no_labels
+
+        # Split low_df into blocks of 8
+        starts = list(range(0, ncols_total, MAX_COLS_PER_BLOCK))
+        for bi, start in enumerate(starts):
+            end = min(start + MAX_COLS_PER_BLOCK, ncols_total)
+            is_last_block = (bi == len(starts) - 1)
+
+            block_low_df = low_df.iloc[:, start:end]
+            block_low_labels = low_labels[start:end] if low_labels is not None else list(block_low_df.columns)
+
+            # On the last block, try to MERGE NO replies columns into this block to make it "9-16"
+            merged_df = block_low_df.copy()
+            merged_labels = list(block_low_labels)
+
+            if is_last_block and no_remaining_df is not None and not no_remaining_df.empty:
+                room = MAX_COLS_PER_BLOCK - merged_df.shape[1]
+                if room > 0:
+                    take = min(room, no_remaining_df.shape[1])
+                    take_df = no_remaining_df.iloc[:, :take].copy()
+                    take_labels = no_remaining_labels[:take] if no_remaining_labels is not None else list(take_df.columns)
+
+                    # Match row counts by padding shorter one
+                    max_rows = max(len(merged_df), len(take_df))
+                    merged_df = merged_df.reindex(range(max_rows)).fillna("")
+                    take_df = take_df.reindex(range(max_rows)).fillna("")
+
+                    merged_df = pd.concat([merged_df, take_df], axis=1)
+                    merged_labels.extend(take_labels)
+
+                    # Remove taken cols from remaining
+                    if take < no_remaining_df.shape[1]:
+                        no_remaining_df = no_remaining_df.iloc[:, take:].copy()
+                        no_remaining_labels = no_remaining_labels[take:] if no_remaining_labels is not None else None
+                    else:
+                        no_remaining_df = None
+                        no_remaining_labels = None
+
+            # Build sections for this page
+            sections: List[Dict[str, Any]] = []
+
+            # Low ratings (possibly with NO merged in)
+            sections.append({
+                "title": "1-2 Star Reviews (columns = chart numbers)" if is_all_teams else "1-3 Star Reviews (columns = chart numbers)",
+                "df": merged_df,
+                "labels": merged_labels,
+                "fontsize": 8,
+                "scale_y": 1.35,
+            })
+
+            # If last block: add any leftover NO replies as its own section
+            if is_last_block and no_remaining_df is not None and not no_remaining_df.empty:
+                sections.append({
+                    "title": '"NO" Replies (columns = chart numbers)',
+                    "df": no_remaining_df,
+                    "labels": no_remaining_labels if no_remaining_labels is not None else list(no_remaining_df.columns),
+                    "fontsize": 8,
+                    "scale_y": 1.25,
+                })
+
+            # If last block: add completion/respondents/comments below
+            if is_last_block:
+                if is_all_teams and completion_df is not None:
+                    sections.append({
+                        "title": "Survey completion summary",
+                        "df": completion_df,
+                        "labels": list(completion_df.columns),
+                        "fontsize": 11,
+                        "scale_y": 1.4,
+                    })
+                if (not is_all_teams) and (respondents_df is not None):
+                    sections.append({
+                        "title": f"{profile.respondent_plural.capitalize()} who completed this survey",
+                        "df": respondents_df,
+                        "labels": list(respondents_df.columns),
+                        "fontsize": 8,
+                        "scale_y": 1.6,
+                    })
+                if (not is_all_teams) and (comments_df is not None):
+                    sections.append({
+                        "title": "Comments and Suggestions",
+                        "df": comments_df,
+                        "labels": list(comments_df.columns),
+                        "fontsize": 8,
+                        "scale_y": 2.2,
+                        "colWidths": [0.12, 0.88],
+                        "wrap_second_col": True,
+                    })
+
+            # Render page (landscape)
+            fig, axes = plt.subplots(
+                nrows=len(sections),
+                ncols=1,
+                figsize=(11, 8.5),
+                gridspec_kw={"height_ratios": [1.4] * len(sections)},
+            )
+            if len(sections) == 1:
+                axes = [axes]
+
+            for ax, sec in zip(axes, sections):
+                ax.axis("off")
+                df_sec = sec["df"]
+                labels_sec = sec["labels"]
+
+                ncols = df_sec.shape[1]
+                col_widths = [1.0 / max(ncols, 1)] * ncols
+                if "colWidths" in sec and sec["colWidths"] is not None:
+                    col_widths = sec["colWidths"]
+
+                tbl = ax.table(
+                    cellText=df_sec.values,
+                    colLabels=labels_sec,
+                    loc="upper left",
+                    colWidths=col_widths,
+                )
+                tbl.auto_set_font_size(False)
+                tbl.set_fontsize(sec.get("fontsize", 8))
+                tbl.scale(1.0, sec.get("scale_y", 1.3))
+                ax.set_title(sec["title"], fontsize=10, pad=6)
+
+                if sec.get("wrap_second_col", False):
+                    for (r, c), cell in tbl.get_celld().items():
+                        if r == 0:
+                            cell.set_text_props(ha="center", va="center", fontweight="bold")
+                            continue
+                        if c == 0:
+                            cell.set_text_props(ha="center", va="top")
+                        else:
+                            txt = cell.get_text()
+                            txt.set_wrap(True)
+                            txt.set_ha("left")
+                            txt.set_va("top")
+                            cell.PAD = 0.02
+
+            # Page title range
+            page_range = f"{start + 1}-{end}"
+            # If we merged NO replies to make 9-16, show 9-16 visually on title
+            if is_last_block and start == 8:
+                page_range = "9-16"
+
+            fig.suptitle(f"{full_title_base} - Low Ratings ({page_range})", fontsize=12)
+            fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+            fig.subplots_adjust(hspace=0.55)
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        return  # IMPORTANT: do not fall through to the single-page renderer
+
+    # --- Normal (not-wide) case: single details page (landscape)
     sections: List[str] = []
     if low_df is not None:
         sections.append("low")
     if no_df is not None:
         sections.append("no")
-
     if is_all_teams:
         if completion_df is not None:
             sections.append("completion")
@@ -652,13 +729,13 @@ def _add_group_tables_page_to_pdf(
         if s == "low":
             height_ratios.append(1.2)
         elif s == "no":
-            height_ratios.append(1.0)
+            height_ratios.append(0.9)
         elif s == "completion":
-            height_ratios.append(0.8)
+            height_ratios.append(0.7)
         elif s == "respondents":
-            height_ratios.append(1.2)
+            height_ratios.append(1.1)
         elif s == "comments":
-            height_ratios.append(1.8)
+            height_ratios.append(1.6)
 
     fig, axes = plt.subplots(
         nrows=len(sections),
@@ -678,16 +755,22 @@ def _add_group_tables_page_to_pdf(
         ncols_low = len(low_df.columns)
         col_widths = [1.0 / max(ncols_low, 1)] * ncols_low
 
-        table = ax.table(
+        tbl = ax.table(
             cellText=low_df.values,
             colLabels=low_labels if low_labels is not None else low_df.columns,
             loc="upper left",
             colWidths=col_widths,
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(7)
-        table.scale(1.0, 1.25)
+        tbl.auto_set_font_size(False)
 
+        if ncols_low <= 10:
+            tbl.set_fontsize(7)
+        elif ncols_low <= 16:
+            tbl.set_fontsize(6)
+        else:
+            tbl.set_fontsize(5)
+
+        tbl.scale(1.0, 1.2)
         ax.set_title(
             "1-2 Star Reviews (columns = chart numbers)" if is_all_teams else "1-3 Star Reviews (columns = chart numbers)",
             fontsize=10,
@@ -702,61 +785,60 @@ def _add_group_tables_page_to_pdf(
         ncols_no = len(no_df.columns)
         col_widths = [1.0 / max(ncols_no, 1)] * ncols_no
 
-        table = ax.table(
+        tbl = ax.table(
             cellText=no_df.values,
             colLabels=no_labels if no_labels is not None else no_df.columns,
             loc="upper left",
             colWidths=col_widths,
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(8)
-        table.scale(1.0, 1.25)
-
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(7)
+        tbl.scale(1.0, 1.2)
         ax.set_title('"NO" Replies (columns = chart numbers)', fontsize=10, pad=6)
         row_idx += 1
 
     if is_all_teams and completion_df is not None:
         ax = axes[row_idx]
         ax.axis("off")
-        table = ax.table(
+        tbl = ax.table(
             cellText=completion_df.values,
             colLabels=completion_df.columns,
             loc="center",
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(11)
-        table.scale(1.2, 1.6)
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(11)
+        tbl.scale(1.2, 1.4)
         ax.set_title("Survey completion summary", fontsize=10, pad=4)
         row_idx += 1
 
     if (not is_all_teams) and (respondents_df is not None):
         ax = axes[row_idx]
         ax.axis("off")
-        table = ax.table(
+        tbl = ax.table(
             cellText=respondents_df.values,
             colLabels=respondents_df.columns,
             loc="upper left",
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(8)
-        table.scale(1.0, 1.6)
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.scale(1.0, 1.6)
         ax.set_title(f"{profile.respondent_plural.capitalize()} who completed this survey", fontsize=10, pad=4)
         row_idx += 1
 
     if (not is_all_teams) and (comments_df is not None):
         ax = axes[row_idx]
         ax.axis("off")
-        table = ax.table(
+        tbl = ax.table(
             cellText=comments_df.values,
             colLabels=comments_df.columns,
             loc="upper left",
             colWidths=[0.12, 0.88],
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(8)
-        table.scale(1.05, 2.2)
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.scale(1.05, 2.2)
 
-        for (r, c), cell in table.get_celld().items():
+        for (r, c), cell in tbl.get_celld().items():
             if r == 0:
                 cell.set_text_props(ha="center", va="center", fontweight="bold")
                 continue
@@ -771,9 +853,8 @@ def _add_group_tables_page_to_pdf(
 
         ax.set_title("Comments and Suggestions", fontsize=10, pad=6)
 
-    full_title = _compose_group_title(profile, title_label, cycle_label) + n_text + " (Details)"
-    fig.suptitle(full_title, fontsize=12, fontweight="bold")
-    fig.tight_layout(rect=[0.02, 0.03, 0.98, 0.92])
+    fig.suptitle(full_title_base, fontsize=12)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.92])
     fig.subplots_adjust(hspace=0.55)
     pdf.savefig(fig)
     plt.close(fig)
@@ -782,7 +863,6 @@ def _add_group_tables_page_to_pdf(
 # -----------------------------
 # Page: cycle summary (page 1)
 # -----------------------------
-
 def _add_cycle_summary_page(
     pdf: PdfPages,
     profile: SurveyProfile,
@@ -795,13 +875,7 @@ def _add_cycle_summary_page(
 
     group_col_name = df.columns[profile.group_col_index]
 
-    sample = (
-        df[group_col_name]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .head(80)
-    )
+    sample = df[group_col_name].dropna().astype(str).str.strip().head(80)
     frac_between_1_5 = _fraction_numeric_between_1_and_5(sample)
     if frac_between_1_5 > 0.60:
         raise ValueError(
@@ -832,7 +906,7 @@ def _add_cycle_summary_page(
 
         stats_by_team[str(team_name).strip()] = (n_resp, avg_rating)
 
-    all_team_names = list(stats_by_team.keys())
+    all_team_names = sorted(stats_by_team.keys())
     if not all_team_names:
         return
 
@@ -874,7 +948,7 @@ def _add_cycle_summary_page(
 
     summary_df["QQIndex"] = qq_vals
 
-    # Rank bars + table by QQ index (descending)
+    # Rank by QQIndex (bars + table)
     summary_df = summary_df.sort_values("QQIndex", ascending=False, ignore_index=True)
 
     fig, (ax_table, ax_bar) = plt.subplots(
@@ -883,30 +957,30 @@ def _add_cycle_summary_page(
         gridspec_kw={"width_ratios": [1.2, 1.8]},
     )
 
-    # Title requested: Cycle X Summary + Players/Families
-    fig.suptitle(f"{cycle_label} Summary - {profile.title}", fontsize=14, fontweight="bold")
+    # Title: Cycle X Summary - Players/Families
+    who_title = profile.respondent_plural.capitalize()
+    fig.suptitle(f"{cycle_label} Summary - {who_title}", fontsize=14, fontweight="bold")
 
     ax_table.axis("off")
     display_df = summary_df[["TeamCoach", "CountDisplay", "RatingStr"]]
 
-    table = ax_table.table(
+    tbl = ax_table.table(
         cellText=display_df.values,
-        colLabels=["Team - Coach", profile.respondent_plural.capitalize(), "Rating"],
+        colLabels=["Team - Coach", who_title, "Rating"],
         loc="center",
         colWidths=[0.72, 0.14, 0.14],
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(7)
-    table.scale(1.1, 1.2)
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(7)
+    tbl.scale(1.1, 1.2)
 
-    for (r, c), cell in table.get_celld().items():
+    for (r, c), cell in tbl.get_celld().items():
         if r == 0:
             cell.set_text_props(ha="center", va="center", fontweight="bold")
         else:
             cell.set_text_props(ha=("left" if c == 0 else "center"), va="center")
 
     ax_bar.set_title(f"{cycle_label} QQ (Quality-Quantity) Index - {total_str}", fontsize=10)
-
     y_pos = np.arange(len(summary_df))
     ax_bar.barh(y_pos, summary_df["QQIndex"].values.astype(float), height=0.6, label="QQ index")
     ax_bar.set_xlabel("QQ index (rating * completion fraction)")
@@ -924,7 +998,6 @@ def _add_cycle_summary_page(
 # -----------------------------
 # Main entry
 # -----------------------------
-
 def create_pdf_report(
     input_path: str,
     cycle_label: str = "Cycle",
@@ -942,8 +1015,6 @@ def create_pdf_report(
     df = pd.read_excel(input_path, sheet_name=0)
 
     _assert_profile_and_df_make_sense(profile, df)
-
-    # Normalize grouping column BEFORE any groupby
     group_col_name = _normalize_group_column_inplace(df, profile)
 
     cols = list(df.columns)
@@ -993,7 +1064,9 @@ def create_pdf_report(
     stats_df = stats_df.sort_values("QQIndex", ascending=False, ignore_index=True)
     qq_sorted_teams = list(stats_df["Team"].values)
 
-    grouped: Dict[str, pd.DataFrame] = {str(team).strip(): sub_df for team, sub_df in df.groupby(group_col_name, sort=False)}
+    grouped: Dict[str, pd.DataFrame] = {
+        str(team).strip(): sub_df for team, sub_df in df.groupby(group_col_name, sort=False)
+    }
 
     with PdfPages(output_path) as pdf:
         _add_cycle_summary_page(pdf, profile, df, cycle_label)
