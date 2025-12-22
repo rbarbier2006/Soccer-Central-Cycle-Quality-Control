@@ -429,33 +429,40 @@ def _build_all_respondents_grid(
     max_cols: int = 8,
 ) -> Optional[pd.DataFrame]:
     """
-    Builds a grid of respondent names:
-    - Up to max_cols names per row (default 8)
-    - Adds a new row ONLY when the previous row is full
-    - No "Respondents #" headers (we will render without colLabels)
+    Up to 8 names per row.
+    Only creates row 2 if row 1 is completely filled (i.e., more than 8 names).
     """
     if respondent_name_index < 0 or respondent_name_index >= len(df_group.columns):
         return None
 
     names = _clean_series_as_str_dropna(df_group.iloc[:, respondent_name_index])
-    names = names[names != ""].drop_duplicates()
+    names = names[names != ""]
 
     if names.empty:
         return None
 
-    n = len(names)
+    # Preserve original order, unique
+    names = names.drop_duplicates(keep="first").reset_index(drop=True)
+
+    n = int(len(names))
     ncols = min(max_cols, n)
+    nrows = int(np.ceil(n / ncols))
 
-    # Row-major chunking: fills row 1 first, then row 2, etc.
-    rows: List[List[str]] = []
-    for i in range(0, n, ncols):
-        chunk = names.iloc[i : i + ncols].tolist()
-        # pad last row to full width so the table stays rectangular
-        chunk += [""] * (ncols - len(chunk))
-        rows.append(chunk)
+    grid = [["" for _ in range(ncols)] for _ in range(nrows)]
 
-    # Columns exist only to satisfy DataFrame shape; we won't render headers anyway.
-    return pd.DataFrame(rows, columns=[""] * ncols)
+    # Fill row 1 left-to-right, then row 2, etc.
+    for i in range(n):
+        r = i // ncols
+        c = i % ncols
+        grid[r][c] = names.iloc[i]
+
+    # IMPORTANT: columns are blanks; header will be auto-hidden anyway by _draw_table
+    out = pd.DataFrame(grid, columns=[""] * ncols)
+
+    # Drop fully empty rows (shouldn't happen, but safe)
+    out = out[(out != "").any(axis=1)]
+    return out
+
 
 
 
