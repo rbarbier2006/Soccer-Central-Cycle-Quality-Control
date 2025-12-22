@@ -602,28 +602,41 @@ def _add_group_tables_page_to_pdf(
     # -----------------------------
     # Helper to draw a table
     # -----------------------------
+
     def _draw_table(ax, df, labels, title, fontsize=8, scale_y=1.35, col_widths=None, wrap=False):
         """
         Draw a matplotlib table.
-        - If labels is None or [], the header row is removed (useful for the Respondents grid).
+    
+        Fixes:
+        - Automatically removes the header row if labels look like "Respondents 1", "Respondents 2", etc.
+        - You can also remove headers by passing labels=None.
         """
         ax.axis("off")
     
         if df is None or getattr(df, "empty", False):
             return None
     
-        ncols = df.shape[1]
+        ncols = int(df.shape[1])
         if col_widths is None:
             col_widths = [1.0 / max(ncols, 1)] * ncols
+    
+        # Auto-hide header if labels are the "Respondents #" placeholders
+        hide_header = False
+        if labels is None:
+            hide_header = True
+        else:
+            lab_strs = [str(x).strip() for x in labels]
+            if all(re.fullmatch(r"Respondents\s*\d+", s) for s in lab_strs):
+                hide_header = True
+            if all(s == "" for s in lab_strs):
+                hide_header = True
     
         table_kwargs = dict(
             cellText=df.values,
             loc="upper left",
             colWidths=col_widths,
         )
-    
-        # Only include a header row if labels were provided
-        if labels is not None and len(labels) > 0:
+        if not hide_header:
             table_kwargs["colLabels"] = labels
     
         tbl = ax.table(**table_kwargs)
@@ -635,10 +648,9 @@ def _add_group_tables_page_to_pdf(
             ax.set_title(title, fontsize=10, pad=6)
     
         if wrap:
-            has_header = labels is not None and len(labels) > 0
             for (r, c), cell in tbl.get_celld().items():
-                # Header formatting (only if header exists)
-                if has_header and r == 0:
+                # If header exists, format it
+                if (not hide_header) and r == 0:
                     cell.set_text_props(ha="center", va="center", fontweight="bold")
                     continue
     
@@ -653,6 +665,7 @@ def _add_group_tables_page_to_pdf(
                     cell.PAD = 0.02
     
         return tbl
+
 
 
     # -----------------------------
