@@ -11,6 +11,11 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from profiles import SurveyProfile, PROFILES
 
+import json
+import math
+from collections import defaultdict
+
+
 # -----------------------------
 # Constants
 # -----------------------------
@@ -895,6 +900,436 @@ def _add_group_tables_page_to_pdf(
     pdf.savefig(fig)
     plt.close(fig)
 
+def _redact_pii_text(text: str) -> str:
+    if text is None:
+        return ""
+    t = str(text)
+
+    # Emails
+    t = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", t)
+
+    # Phone-ish strings
+    t = re.sub(r"\b(\+?\d[\d\s\-\(\)]{7,}\d)\b", "[phone]", t)
+
+    return t
+
+
+def _extract_all_comments_texts(df: pd.DataFrame) -> Tuple[List[str], List[str]]:
+    cols = list(df.columns)
+    comment_indices: List[int] = []
+    for i, name in enumerate(cols):
+        nl = str(name).lower()
+        if "comment" in nl or "suggest" in nl:
+            comment_indices.append(i)
+
+    if not comment_indices:
+        return [], []
+
+    out: List[str] = []
+    used_col_names: List[str] = []
+
+    for idx in comment_indices:
+        used_col_names.append(str(cols[idx]))
+        series = df.iloc[:, idx]
+        for v in series:
+            if pd.isna(v):
+                continue
+            txt = str(v).strip()
+            if not txt:
+                continue
+
+            # If multiple comment columns exist, preserve which column it came from
+            if len(comment_indices) > 1:
+                txt = f"[{cols[idx]}] {txt}"
+
+            txt = _redact_pii_text(txt)
+
+            # keep prompts bounded
+            if len(txt) > 700:
+                txt = txt[:700] + "..."
+
+            out.append(txt)
+
+    return out, used_col_names
+
+
+def _safe_json_loads(maybe_json: str) -> Optional[dict]:
+    if not maybe_json:
+        return None
+    s = str(maybe_json).strip()
+
+    # direct parse
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+
+    # try extracting a JSON object substring
+    m = re.search(r"\{.*\}", s, flags=re.DOTALL)
+    if not m:
+        return None
+
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
+
+
+def _try_get_openai_client():
+    try:
+        from openai import OpenAI
+    except Exception:
+        return None
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    try:
+        return OpenAI(api_key=api_key)
+    except Exception:
+        return None
+
+
+def _llm_build_taxonomy(client, survey_key: str, sample_comments: List[str]) -> Optional[dict]:
+    # Keep it survey-aware but generic
+    prompt = f"""
+You are analyzing open-ended survey comments for a youth soccer academy.
+Survey type: {survey_key}
+
+Create a theme taxonomy that can cover MOST comments.
+
+Return JSON ONLY with schema:
+{{
+  "themes": [
+    {{
+      "theme_id": "short_slug_lowercase",
+      "theme_name": "Short name",
+      "definition": "What this theme means",
+      "severity_guidance": "What makes it more critical vs less critical"
+    }}
+  ]
+}}
+
+Notes:
+- 10 to 18 themes.
+- Themes should be distinct and not overlap too much.
+- Use neutral, professional language.
+
+Comment sample:
+{json.dumps(sample_comments, ensure_ascii=True)}
+""".strip()
+
+    try:
+        resp = client.responses.create(
+            model=os.environ.get("OPENAI_COMMENTS_MODEL", "gpt-5-mini"),
+            input=prompt,
+            # store=False,  # uncomment if desired
+        )
+    except Exception:
+        return None
+
+    parsed = _safe_json_loads(getattr(resp, "output_text", "") or "")
+    if not parsed or "themes" not in parsed:
+        return None
+    return parsed
+
+
+def _llm_classify_chunk(client, taxonomy: dict, chunk: List[dict], survey_key: str) -> Optional[dict]:
+    prompt = f"""
+You are classifying survey comments into themes for a youth soccer academy.
+Survey type: {survey_key}
+
+Rules:
+- Multi-label allowed (0 to 3 themes per comment).
+- If none fit, use [].
+- Assign severity 1 to 5 where 5 is most critical/urgent.
+- Use ONLY theme_id values from the taxonomy.
+
+Return JSON ONLY with schema:
+{{
+  "results": [
+    {{
+      "comment_id": 123,
+      "theme_ids": ["theme_a", "theme_b"],
+      "severity": 1
+    }}
+  ]
+}}
+
+TAXONOMY:
+{json.dumps(taxonomy, ensure_ascii=True)}
+
+COMMENTS:
+{json.dumps(chunk, ensure_ascii=True)}
+""".strip()
+
+    try:
+        resp = client.responses.create(
+            model=os.environ.get("OPENAI_COMMENTS_MODEL", "gpt-5-mini"),
+            input=prompt,
+            # store=False,
+        )
+    except Exception:
+        return None
+
+    parsed = _safe_json_loads(getattr(resp, "output_text", "") or "")
+    if not parsed or "results" not in parsed:
+        return None
+    return parsed
+
+
+def _analyze_comments_with_llm(profile: SurveyProfile, df: pd.DataFrame) -> Optional[dict]:
+    comments, col_names = _extract_all_comments_texts(df)
+    if not comments:
+        return {
+            "total_comments": 0,
+            "columns_used": col_names,
+            "themes": [],
+            "uncategorized": 0,
+            "top_examples": {},
+        }
+
+    client = _try_get_openai_client()
+    if client is None:
+        return None
+
+    total_comments = len(comments)
+
+    # Sample for taxonomy only
+    sample = comments[:60]
+
+    taxonomy = _llm_build_taxonomy(client, profile.key, sample)
+    if taxonomy is None:
+        return None
+
+    theme_meta = {t.get("theme_id"): t for t in taxonomy.get("themes", []) if t.get("theme_id")}
+    if not theme_meta:
+        return None
+
+    # Classify all comments in chunks
+    chunk_size = int(os.environ.get("OPENAI_COMMENTS_CHUNK_SIZE", "45"))
+    results_all: List[dict] = []
+    top_examples: Dict[str, List[str]] = defaultdict(list)  # theme_id -> example comments
+
+    for start in range(0, total_comments, chunk_size):
+        chunk_texts = comments[start:start + chunk_size]
+        chunk = [{"comment_id": start + i + 1, "text": chunk_texts[i]} for i in range(len(chunk_texts))]
+
+        parsed = _llm_classify_chunk(client, taxonomy, chunk, profile.key)
+        if parsed is None:
+            return None
+
+        for r in parsed.get("results", []):
+            results_all.append(r)
+
+    # Aggregate: frequency first, plus severity marker
+    counts = defaultdict(int)
+    sev_sum = defaultdict(int)
+    sev_n = defaultdict(int)
+    uncategorized = 0
+
+    for r in results_all:
+        theme_ids = r.get("theme_ids", [])
+        sev = r.get("severity", 1)
+        try:
+            sev = int(sev)
+        except Exception:
+            sev = 1
+        sev = max(1, min(5, sev))
+
+        if not theme_ids:
+            uncategorized += 1
+            continue
+
+        # Save a few severe examples per theme (for "serious complaints" section)
+        for tid in theme_ids[:3]:
+            if tid not in theme_meta:
+                continue
+            counts[tid] += 1
+            sev_sum[tid] += sev
+            sev_n[tid] += 1
+
+            if sev >= 4 and len(top_examples[tid]) < 3:
+                # find the comment text by comment_id (1-based)
+                cid = r.get("comment_id")
+                try:
+                    cid = int(cid)
+                    txt = comments[cid - 1]
+                except Exception:
+                    txt = ""
+                if txt:
+                    top_examples[tid].append(txt)
+
+    theme_rows = []
+    for tid, cnt in counts.items():
+        avg_sev = float(sev_sum[tid]) / float(max(sev_n[tid], 1))
+        pct = (cnt / float(max(total_comments, 1))) * 100.0
+
+        # Criticality marker from avg severity
+        if avg_sev >= 4.0:
+            crit = "HIGH"
+        elif avg_sev >= 3.0:
+            crit = "MED"
+        else:
+            crit = "LOW"
+
+        theme_rows.append({
+            "theme_id": tid,
+            "theme_name": str(theme_meta[tid].get("theme_name", tid)),
+            "mentions": int(cnt),
+            "percent": float(pct),
+            "avg_severity": float(avg_sev),
+            "criticality": crit,
+        })
+
+    # Sort: most common -> least common; tie-breaker: more severe
+    theme_rows.sort(key=lambda x: (x["mentions"], x["avg_severity"]), reverse=True)
+
+    return {
+        "total_comments": total_comments,
+        "columns_used": col_names,
+        "themes": theme_rows,
+        "uncategorized": int(uncategorized),
+        "top_examples": dict(top_examples),
+    }
+
+
+def _add_all_teams_comments_insights_page_to_pdf(
+    pdf: PdfPages,
+    profile: SurveyProfile,
+    df_all: pd.DataFrame,
+    cycle_label: str,
+) -> None:
+    analysis = _analyze_comments_with_llm(profile, df_all)
+
+    # If AI is unavailable, still add a page explaining why (so user understands)
+    ai_available = analysis is not None
+
+    fig = plt.figure(figsize=(11, 8.5))
+    gs = fig.add_gridspec(3, 1, height_ratios=[0.48, 0.34, 0.18])
+
+    ax_bar = fig.add_subplot(gs[0, 0])
+    ax_tbl = fig.add_subplot(gs[1, 0])
+    ax_notes = fig.add_subplot(gs[2, 0])
+
+    ax_tbl.axis("off")
+    ax_notes.axis("off")
+
+    title = f"All Teams - {cycle_label} (Comments Insights)"
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+
+    if not ai_available:
+        ax_bar.axis("off")
+        msg = (
+            "AI comments insights unavailable.\n\n"
+            "To enable:\n"
+            "- Set environment variable OPENAI_API_KEY\n"
+            "- Install the openai package: pip install openai\n"
+        )
+        ax_tbl.text(0.02, 0.85, msg, ha="left", va="top", fontsize=11)
+        pdf.savefig(fig)
+        plt.close(fig)
+        return
+
+    total = int(analysis.get("total_comments", 0))
+    themes = analysis.get("themes", []) or []
+    uncategorized = int(analysis.get("uncategorized", 0))
+    cols_used = analysis.get("columns_used", []) or []
+
+    header_line = f"Total comments analyzed: {total}"
+    if cols_used:
+        header_line += f" | Columns used: {', '.join(cols_used)}"
+    ax_bar.set_title(header_line, fontsize=10)
+
+    if total == 0 or not themes:
+        ax_bar.axis("off")
+        ax_tbl.text(0.02, 0.85, "No comments found to analyze.", ha="left", va="top", fontsize=11)
+        pdf.savefig(fig)
+        plt.close(fig)
+        return
+
+    # Top N themes for chart/table
+    top_n = min(12, len(themes))
+    top = themes[:top_n]
+
+    # Bar chart: mentions
+    y_labels = [t["theme_name"] for t in reversed(top)]
+    x_vals = [t["mentions"] for t in reversed(top)]
+    y_pos = np.arange(len(y_labels))
+
+    ax_bar.barh(y_pos, x_vals)
+    ax_bar.set_yticks(y_pos)
+    ax_bar.set_yticklabels(y_labels, fontsize=9)
+    ax_bar.set_xlabel("Mentions")
+    ax_bar.grid(axis="x", linestyle=":", linewidth=0.7, alpha=0.6)
+
+    # Table under the chart
+    df_tbl = pd.DataFrame([{
+        "Theme": t["theme_name"],
+        "Mentions": t["mentions"],
+        "Percent": f'{t["percent"]:.0f}%',
+        "Criticality": t["criticality"],
+        "Avg Sev": f'{t["avg_severity"]:.2f}',
+    } for t in top])
+
+    tbl = ax_tbl.table(
+        cellText=df_tbl.values,
+        colLabels=df_tbl.columns.tolist(),
+        loc="upper left",
+        colWidths=[0.46, 0.12, 0.12, 0.15, 0.15],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9)
+    tbl.scale(1.0, 1.25)
+
+    for (r, c), cell in tbl.get_celld().items():
+        if r == 0:
+            cell.set_text_props(ha="center", va="center", fontweight="bold")
+        else:
+            if c == 0:
+                cell.set_text_props(ha="left", va="center")
+            else:
+                cell.set_text_props(ha="center", va="center")
+
+    # Notes: serious complaints examples (HIGH criticality first)
+    serious_theme_ids = [t["theme_id"] for t in themes if t["criticality"] == "HIGH"][:3]
+    top_examples = analysis.get("top_examples", {}) or {}
+
+    lines = []
+    lines.append("Serious complaints flagged (examples):")
+    if serious_theme_ids:
+        for tid in serious_theme_ids:
+            tname = None
+            for t in themes:
+                if t["theme_id"] == tid:
+                    tname = t["theme_name"]
+                    break
+            examples = top_examples.get(tid, [])
+            if not examples:
+                continue
+
+            lines.append(f"- {tname}:")
+            for ex in examples[:2]:
+                ex_wrapped = textwrap.fill(ex, width=120)
+                lines.append(f"  * {ex_wrapped}")
+    else:
+        lines.append("- None clearly high-critical based on average severity (still review top themes).")
+
+    lines.append("")
+    lines.append(f"Uncategorized comments (no theme match): {uncategorized}")
+    lines.append("Note: AI themes are a summary; validate by reviewing raw comments when needed.")
+
+    ax_notes.text(
+        0.02, 0.98,
+        "\n".join(lines),
+        ha="left", va="top",
+        fontsize=9,
+    )
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.94])
+    pdf.savefig(fig)
+    plt.close(fig)
 
 
 # -----------------------------
@@ -1112,6 +1547,9 @@ def create_pdf_report(
         _add_group_charts_page_to_pdf(pdf, profile, df, "All Teams", cycle_label, all_meta)
         _add_group_tables_page_to_pdf(pdf, profile, df, "All Teams", cycle_label, all_meta, is_all_teams=True)
 
+        # NEW: All Teams Comments Insights (AI)
+        _add_all_teams_comments_insights_page_to_pdf(pdf, profile, df, cycle_label)
+        
         for team in qq_sorted_teams:
             group_df = grouped.get(team)
             if group_df is None:
