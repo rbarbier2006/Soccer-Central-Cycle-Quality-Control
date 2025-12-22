@@ -307,14 +307,12 @@ def _add_group_charts_page_to_pdf(
 
     nrows = int(np.ceil(n_plots / ncols))
 
-    # IMPORTANT: landscape so it matches the other pages' "size"
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(11, 8.5))
-
     axes = np.array(axes)
+
     if axes.ndim == 0:
         axes = axes.reshape(1, 1)
     elif axes.ndim == 1:
-        # One row or one column
         if nrows == 1:
             axes = axes.reshape(1, ncols)
         else:
@@ -322,13 +320,10 @@ def _add_group_charts_page_to_pdf(
 
     axes_flat = axes.flatten()
 
-    # Turn off unused axes
     for ax in axes_flat[n_plots:]:
         ax.axis("off")
 
     y_label = f"{profile.respondent_singular.capitalize()} Count"
-
-    # Title wrap tighter when there are 4 columns
     wrap_width = 26 if ncols == 4 else 40
 
     for ax, meta in zip(axes_flat, plots_meta):
@@ -337,7 +332,6 @@ def _add_group_charts_page_to_pdf(
         col_name = meta["col_name"]
         number = meta["number"]
 
-        # Big chart number in corner
         ax.text(
             0.02, 0.98, str(number),
             transform=ax.transAxes,
@@ -345,8 +339,6 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        # Use profile.chart_labels when available
-        display_title = None
         if profile.chart_labels and number in profile.chart_labels:
             display_title = str(profile.chart_labels[number])
         else:
@@ -412,12 +404,9 @@ def _add_group_charts_page_to_pdf(
 
     full_title = _compose_group_title(profile, title_label, cycle_label) + n_text
     fig.suptitle(full_title, fontsize=14, fontweight="bold")
-
-    # Leave space for the suptitle
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     pdf.savefig(fig)
     plt.close(fig)
-
 
 
 # -----------------------------
@@ -429,41 +418,33 @@ def _build_all_respondents_grid(
     max_cols: int = 8,
 ) -> Optional[pd.DataFrame]:
     """
-    Up to 8 names per row.
-    Only creates row 2 if row 1 is completely filled (i.e., more than 8 names).
+    Exactly what you asked:
+    - Up to 8 names per row
+    - Only create a 2nd row if the 1st row is completely filled (more than 8 names)
+    - NO "Respondents #" headers (blank column names)
+    - Always uses 8 columns so 8 can fit on one row (even if fewer than 8 names)
     """
     if respondent_name_index < 0 or respondent_name_index >= len(df_group.columns):
         return None
 
     names = _clean_series_as_str_dropna(df_group.iloc[:, respondent_name_index])
     names = names[names != ""]
-
     if names.empty:
         return None
 
-    # Preserve original order, unique
     names = names.drop_duplicates(keep="first").reset_index(drop=True)
-
     n = int(len(names))
-    ncols = min(max_cols, n)
-    nrows = int(np.ceil(n / ncols))
+
+    ncols = int(max_cols)
+    nrows = 1 if n <= ncols else int(np.ceil(n / ncols))
 
     grid = [["" for _ in range(ncols)] for _ in range(nrows)]
-
-    # Fill row 1 left-to-right, then row 2, etc.
     for i in range(n):
         r = i // ncols
         c = i % ncols
         grid[r][c] = names.iloc[i]
 
-    # IMPORTANT: columns are blanks; header will be auto-hidden anyway by _draw_table
-    out = pd.DataFrame(grid, columns=[""] * ncols)
-
-    # Drop fully empty rows (shouldn't happen, but safe)
-    out = out[(out != "").any(axis=1)]
-    return out
-
-
+    return pd.DataFrame(grid, columns=[""] * ncols)
 
 
 def _build_comments_table(
@@ -511,8 +492,10 @@ def _build_comments_table(
 
 # -----------------------------
 # Page: tables (page 2 per group)
-# Includes "two blocks" behavior for Families:
-# Low Ratings split into 1-8 and 9-16, where 16 is NO replies merged in.
+# Families behavior:
+# - Low Ratings split into 1-8 and 9-16
+# - Q16 (YES/NO "NO replies") is appended as the LAST COLUMN of the 9-16 low table
+# - NO separate "NO Replies" table for Families
 # -----------------------------
 def _add_group_tables_page_to_pdf(
     pdf: PdfPages,
@@ -590,10 +573,11 @@ def _add_group_tables_page_to_pdf(
             {"Metric": [f"{profile.respondent_plural.capitalize()} who completed this survey"], "Value": [n_resp]}
         )
     else:
+        # IMPORTANT: 8 columns (you asked)
         respondents_df = _build_all_respondents_grid(
             df_group,
             respondent_name_index=profile.respondent_name_index,
-            max_cols=6,
+            max_cols=8,
         )
         comments_df = _build_comments_table(df_group, respondent_name_index=profile.respondent_name_index)
 
@@ -609,25 +593,15 @@ def _add_group_tables_page_to_pdf(
     # -----------------------------
     # Helper to draw a table
     # -----------------------------
-
     def _draw_table(ax, df, labels, title, fontsize=8, scale_y=1.35, col_widths=None, wrap=False):
-        """
-        Draw a matplotlib table.
-    
-        Fixes:
-        - Automatically removes the header row if labels look like "Respondents 1", "Respondents 2", etc.
-        - You can also remove headers by passing labels=None.
-        """
         ax.axis("off")
-    
         if df is None or getattr(df, "empty", False):
             return None
-    
+
         ncols = int(df.shape[1])
         if col_widths is None:
             col_widths = [1.0 / max(ncols, 1)] * ncols
-    
-        # Auto-hide header if labels are the "Respondents #" placeholders
+
         hide_header = False
         if labels is None:
             hide_header = True
@@ -637,7 +611,7 @@ def _add_group_tables_page_to_pdf(
                 hide_header = True
             if all(s == "" for s in lab_strs):
                 hide_header = True
-    
+
         table_kwargs = dict(
             cellText=df.values,
             loc="upper left",
@@ -645,23 +619,20 @@ def _add_group_tables_page_to_pdf(
         )
         if not hide_header:
             table_kwargs["colLabels"] = labels
-    
+
         tbl = ax.table(**table_kwargs)
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(fontsize)
         tbl.scale(1.0, scale_y)
-    
+
         if title:
             ax.set_title(title, fontsize=10, pad=6)
-    
+
         if wrap:
             for (r, c), cell in tbl.get_celld().items():
-                # If header exists, format it
                 if (not hide_header) and r == 0:
                     cell.set_text_props(ha="center", va="center", fontweight="bold")
                     continue
-    
-                # Body formatting
                 if c == 0:
                     cell.set_text_props(ha="center", va="top")
                 else:
@@ -670,17 +641,16 @@ def _add_group_tables_page_to_pdf(
                     txt.set_ha("left")
                     txt.set_va("top")
                     cell.PAD = 0.02
-    
+
         return tbl
 
-
-
     # -----------------------------
-    # WIDE low_df: split into chunks of 8 columns
-    # Families special rule:
-    #   On the LAST chunk page, append Q16 (NO replies) as the LAST COLUMN of that SAME table.
+    # Families wide low table: force 2 blocks (1-8) and (9-16)
+    # by appending Q16 (NO replies) onto the 2nd low block.
     # -----------------------------
     MAX_COLS_PER_PAGE = 8
+    is_families = (profile.key or "").lower().strip() == "families"
+
     if low_df is not None and len(low_df.columns) > MAX_COLS_PER_PAGE:
         ncols_total = len(low_df.columns)
 
@@ -691,33 +661,30 @@ def _add_group_tables_page_to_pdf(
             low_chunk = low_df.iloc[:, start:end]
             low_chunk_labels = low_labels[start:end] if low_labels is not None else list(low_chunk.columns)
 
-            # ---- Families-only merge: add Q16 as last column of the low table on the LAST chunk page
             merged_low = low_chunk
             merged_labels = list(low_chunk_labels)
 
+            # Families-only: append Q16 (NO replies) as last column on LAST chunk
             do_merge_q16 = (
                 is_last_chunk and
-                (profile.key.lower() == "families") and
+                is_families and
                 (no_df is not None) and
                 (no_labels is not None) and
                 (len(no_df.columns) == 1)
             )
 
             if do_merge_q16:
-                # ensure same row count by reindexing both to max rows
                 max_rows = max(len(merged_low), len(no_df))
                 merged_low = merged_low.reindex(range(max_rows)).fillna("")
                 no_col = no_df.iloc[:, 0].reindex(range(max_rows)).fillna("").astype(str)
 
-                # append as last column
                 merged_low = merged_low.copy()
                 merged_low[str(no_df.columns[0])] = no_col.values
-                merged_labels.append(no_labels[0])  # should be (16)Q16
+                merged_labels.append(no_labels[0])  # label for Q16
 
-            # Build sections for this page
             sections = [("low", merged_low, merged_labels)]
 
-            # On last chunk page, also add completion/respondents/comments
+            # On last chunk page, add completion/respondents/comments
             if is_last_chunk:
                 if is_all_teams and completion_df is not None:
                     sections.append(("completion", completion_df, list(completion_df.columns)))
@@ -726,14 +693,23 @@ def _add_group_tables_page_to_pdf(
                 if (not is_all_teams) and (comments_df is not None):
                     sections.append(("comments", comments_df, list(comments_df.columns)))
 
+                # If NOT families (or merge didn't happen), also add NO replies as its own section
+                if (not is_families) and (no_df is not None):
+                    sections.insert(1, ("no", no_df, no_labels if no_labels is not None else list(no_df.columns)))
+                if is_families and (not do_merge_q16) and (no_df is not None):
+                    # fallback safety: still show it if it couldn't be merged
+                    sections.insert(1, ("no", no_df, no_labels if no_labels is not None else list(no_df.columns)))
+
             height_ratios = []
             for key, *_ in sections:
                 if key == "low":
                     height_ratios.append(1.35)
+                elif key == "no":
+                    height_ratios.append(0.85)
                 elif key == "completion":
                     height_ratios.append(0.65)
                 elif key == "respondents":
-                    height_ratios.append(1.0)
+                    height_ratios.append(0.95)
                 elif key == "comments":
                     height_ratios.append(1.6)
                 else:
@@ -752,8 +728,10 @@ def _add_group_tables_page_to_pdf(
                 if key == "low":
                     title = ("1-2 Star Reviews (columns = chart numbers)" if is_all_teams
                              else "1-3 Star Reviews (columns = chart numbers)")
-                    # If we merged Q16 in, the title is still fine (it’s the same numbered grid)
                     _draw_table(ax, df_sec, labels_sec, title=title, fontsize=8, scale_y=1.35)
+
+                elif key == "no":
+                    _draw_table(ax, df_sec, labels_sec, title='"NO" Replies (columns = chart numbers)', fontsize=8, scale_y=1.15)
 
                 elif key == "completion":
                     _draw_table(ax, df_sec, labels_sec, title="Survey completion summary", fontsize=11, scale_y=1.35)
@@ -762,7 +740,7 @@ def _add_group_tables_page_to_pdf(
                     _draw_table(
                         ax, df_sec, labels_sec,
                         title=f"{profile.respondent_plural.capitalize()} who completed this survey",
-                        fontsize=8, scale_y=1.6
+                        fontsize=8, scale_y=1.35
                     )
 
                 elif key == "comments":
@@ -774,11 +752,10 @@ def _add_group_tables_page_to_pdf(
                         wrap=True
                     )
 
-            # Page range label
+            # Range label (force exactly what you asked)
             if start == 0:
                 range_str = "1-8"
             else:
-                # If we merged Q16, make the label show 9-16
                 range_str = "9-16" if do_merge_q16 else f"{start+1}-{end}"
 
             fig.suptitle(f"{base_title} - Low Ratings ({range_str})", fontsize=12)
@@ -787,16 +764,18 @@ def _add_group_tables_page_to_pdf(
             pdf.savefig(fig)
             plt.close(fig)
 
-        # IMPORTANT: In the wide-table path we handled everything already.
         return
 
     # -----------------------------
-    # Not wide: single page behavior (keep original sections)
+    # Not wide: single page behavior
+    # Families still should NOT show a separate "NO Replies" table if you ever want it merged,
+    # but this path is mainly for Players (7 ratings).
     # -----------------------------
     sections: List[str] = []
     if low_df is not None:
         sections.append("low")
-    if no_df is not None:
+
+    if (no_df is not None) and (not is_families):
         sections.append("no")
 
     if is_all_teams:
@@ -817,7 +796,7 @@ def _add_group_tables_page_to_pdf(
         elif s == "completion":
             height_ratios.append(0.7)
         elif s == "respondents":
-            height_ratios.append(1.1)
+            height_ratios.append(0.95)
         elif s == "comments":
             height_ratios.append(1.6)
 
@@ -844,7 +823,7 @@ def _add_group_tables_page_to_pdf(
         )
         row_idx += 1
 
-    if no_df is not None:
+    if (no_df is not None) and (not is_families):
         _draw_table(
             axes[row_idx],
             no_df,
@@ -873,7 +852,7 @@ def _add_group_tables_page_to_pdf(
             list(respondents_df.columns),
             title=f"{profile.respondent_plural.capitalize()} who completed this survey",
             fontsize=8,
-            scale_y=1.6,
+            scale_y=1.35,
         )
         row_idx += 1
 
@@ -894,7 +873,6 @@ def _add_group_tables_page_to_pdf(
     fig.subplots_adjust(hspace=0.55)
     pdf.savefig(fig)
     plt.close(fig)
-
 
 
 # -----------------------------
@@ -984,8 +962,6 @@ def _add_cycle_summary_page(
         qq_vals.append(float(rating) * frac)
 
     summary_df["QQIndex"] = qq_vals
-
-    # Rank by QQIndex (bars + table)
     summary_df = summary_df.sort_values("QQIndex", ascending=False, ignore_index=True)
 
     fig, (ax_table, ax_bar) = plt.subplots(
@@ -994,7 +970,6 @@ def _add_cycle_summary_page(
         gridspec_kw={"width_ratios": [1.2, 1.8]},
     )
 
-    # Title: Cycle X Summary - Players/Families
     who_title = profile.respondent_plural.capitalize()
     fig.suptitle(f"{cycle_label} Summary - {who_title}", fontsize=14, fontweight="bold")
 
