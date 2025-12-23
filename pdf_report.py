@@ -15,6 +15,9 @@ import json
 import math
 from collections import defaultdict
 
+if "OPENAI_API_KEY" in st.secrets and st.secrets["OPENAI_API_KEY"]:
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+
 
 # -----------------------------
 # Constants
