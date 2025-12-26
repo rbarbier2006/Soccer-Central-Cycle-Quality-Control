@@ -724,7 +724,7 @@ def _add_group_tables_page_to_pdf(
                     _draw_table(ax, df_sec, labels_sec, title=title, fontsize=8, scale_y=1.35)
 
                 elif key == "completion":
-                    _draw_table(ax, df_sec, labels_sec, title="Survey completion summary", fontsize=11, scale_y=1.35)
+                    _draw_table(ax, df_sec, labels=None, title="Survey completion summary", fontsize=11, scale_y=1.35)
 
                 elif key == "respondents":
                     _draw_table(
