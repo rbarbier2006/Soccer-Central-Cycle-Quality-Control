@@ -657,94 +657,79 @@ def _add_group_tables_page_to_pdf(
     # -----------------------------
     # WIDE low_df: split into chunks of 8 columns (COMMENTS REMOVED)
     # -----------------------------
+    # -----------------------------
+    # FAMILIES TEAM PAGES: combine the two low-rating blocks into ONE page
+    # (1-8) + (9-16) + Respondents on the SAME page
+    # -----------------------------
     MAX_COLS_PER_PAGE = 8
-    if low_df is not None and len(low_df.columns) > MAX_COLS_PER_PAGE:
-        ncols_total = len(low_df.columns)
-
-        for start in range(0, ncols_total, MAX_COLS_PER_PAGE):
-            end = min(start + MAX_COLS_PER_PAGE, ncols_total)
-            is_last_chunk = (end == ncols_total)
-
-            low_chunk = low_df.iloc[:, start:end]
-            low_chunk_labels = low_labels[start:end] if low_labels is not None else list(low_chunk.columns)
-
-            # Families-only merge Q16 into last chunk (keep your existing logic if you had it)
-            merged_low = low_chunk
-            merged_labels = list(low_chunk_labels)
-
-            do_merge_q16 = (
-                is_last_chunk and
-                (profile.key.lower() == "families") and
-                (no_df is not None) and
-                (no_labels is not None) and
-                (len(no_df.columns) == 1)
-            )
-            if do_merge_q16:
-                max_rows = max(len(merged_low), len(no_df))
-                merged_low = merged_low.reindex(range(max_rows)).fillna("")
-                no_col = no_df.iloc[:, 0].reindex(range(max_rows)).fillna("").astype(str)
-
-                merged_low = merged_low.copy()
-                merged_low[str(no_df.columns[0])] = no_col.values
-                merged_labels.append(no_labels[0])
-
-            sections = [("low", merged_low, merged_labels)]
-
-            # On last chunk page, also add completion/respondents (NO COMMENTS)
-            if is_last_chunk:
-                if is_all_teams and completion_df is not None:
-                    sections.append(("completion", completion_df, list(completion_df.columns)))
-                if (not is_all_teams) and (respondents_df is not None):
-                    sections.append(("respondents", respondents_df, list(respondents_df.columns)))
-
-            height_ratios = []
-            for key, *_ in sections:
-                if key == "low":
-                    height_ratios.append(1.35)
-                elif key == "completion":
-                    height_ratios.append(0.65)
-                elif key == "respondents":
-                    height_ratios.append(1.0)
-                else:
-                    height_ratios.append(1.0)
-
-            fig, axes = plt.subplots(
-                nrows=len(sections),
-                ncols=1,
-                figsize=(11, 8.5),
-                gridspec_kw={"height_ratios": height_ratios},
-            )
-            if len(sections) == 1:
-                axes = [axes]
-
-            for ax, (key, df_sec, labels_sec) in zip(axes, sections):
-                if key == "low":
-                    title = ("1-2 Star Reviews (columns = chart numbers)" if is_all_teams
-                             else "1-3 Star Reviews (columns = chart numbers)")
-                    _draw_table(ax, df_sec, labels_sec, title=title, fontsize=8, scale_y=1.35)
-
-                elif key == "completion":
-                    _draw_table(ax, df_sec, labels_sec, title="Survey completion summary", fontsize=11, scale_y=1.35)
-
-                elif key == "respondents":
-                    _draw_table(
-                        ax, df_sec, labels=None,
-                        title=f"{profile.respondent_plural.capitalize()} who completed this survey",
-                        fontsize=8, scale_y=1.6
-                    )
-
-            if start == 0:
-                range_str = "1-8"
-            else:
-                range_str = "9-16" if do_merge_q16 else f"{start+1}-{end}"
-
-            fig.suptitle(f"{base_title} - Low Ratings ({range_str})", fontsize=12)
-            fig.tight_layout(rect=[0, 0.03, 1, 0.92])
-            fig.subplots_adjust(hspace=0.55)
-            pdf.savefig(fig)
-            plt.close(fig)
-
+    
+    if (
+        profile.key.lower() == "families"
+        and (not is_all_teams)
+        and (low_df is not None)
+        and (len(low_df.columns) > MAX_COLS_PER_PAGE)
+    ):
+        # Split ratings table into 1-8 and 9-15 (ratings only)
+        low_1 = low_df.iloc[:, 0:MAX_COLS_PER_PAGE]
+        low_2 = low_df.iloc[:, MAX_COLS_PER_PAGE:len(low_df.columns)]
+    
+        labels_1 = (low_labels[0:MAX_COLS_PER_PAGE] if low_labels is not None else list(low_1.columns))
+        labels_2 = (low_labels[MAX_COLS_PER_PAGE:len(low_df.columns)] if low_labels is not None else list(low_2.columns))
+    
+        # Merge Q16 (YES/NO "NO replies" column) into the SECOND block as the last column
+        if (no_df is not None) and (no_labels is not None) and (len(no_df.columns) == 1):
+            max_rows = max(len(low_2), len(no_df))
+            low_2 = low_2.reindex(range(max_rows)).fillna("")
+            no_col = no_df.iloc[:, 0].reindex(range(max_rows)).fillna("").astype(str)
+    
+            low_2 = low_2.copy()
+            low_2[str(no_df.columns[0])] = no_col.values
+            labels_2 = list(labels_2) + [no_labels[0]]
+    
+        # Build one combined page: low_1 + low_2 + respondents
+        sections = [("low1", low_1, labels_1), ("low2", low_2, labels_2)]
+        if respondents_df is not None:
+            sections.append(("respondents", respondents_df, None))  # labels=None => no header row
+    
+        height_ratios = [1.05, 1.05] + ([0.75] if respondents_df is not None else [])
+        fig, axes = plt.subplots(
+            nrows=len(sections),
+            ncols=1,
+            figsize=(11, 8.5),
+            gridspec_kw={"height_ratios": height_ratios},
+        )
+        if len(sections) == 1:
+            axes = [axes]
+    
+        for ax, (key, df_sec, labels_sec) in zip(axes, sections):
+            if key == "low1":
+                _draw_table(
+                    ax, df_sec, labels_sec,
+                    title="1-3 Star Reviews (columns = chart numbers) (1-8)",
+                    fontsize=8, scale_y=1.25
+                )
+            elif key == "low2":
+                _draw_table(
+                    ax, df_sec, labels_sec,
+                    title="1-3 Star Reviews (columns = chart numbers) (9-16)",
+                    fontsize=8, scale_y=1.25
+                )
+            elif key == "respondents":
+                _draw_table(
+                    ax, df_sec, None,
+                    title="Families who completed this survey",
+                    fontsize=8, scale_y=1.6
+                )
+    
+        fig.suptitle(base_title, fontsize=12)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+        fig.subplots_adjust(hspace=0.55)
+        pdf.savefig(fig)
+        plt.close(fig)
+    
+        # IMPORTANT: stop here so the old 2-page split logic does NOT run
         return
+
 
     # -----------------------------
     # Not wide: single page behavior (COMMENTS REMOVED)
