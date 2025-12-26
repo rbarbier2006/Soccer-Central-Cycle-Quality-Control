@@ -550,7 +550,7 @@ def _add_group_tables_page_to_pdf(
             for colname in low_df.columns:
                 num = rating_number_by_name.get(colname)
                 if num is not None and profile.chart_labels and num in profile.chart_labels:
-                    low_labels.append(str(profile.chart_labels[num]))
+                    low_labels.append(profile.chart_labels[num])
                 else:
                     low_labels.append(str(colname))
 
@@ -570,39 +570,32 @@ def _add_group_tables_page_to_pdf(
             for colname in no_df.columns:
                 num = yesno_number_by_name.get(colname)
                 if num is not None and profile.chart_labels and num in profile.chart_labels:
-                    no_labels.append(str(profile.chart_labels[num]))
+                    no_labels.append(profile.chart_labels[num])
                 else:
                     no_labels.append(str(colname))
 
     # -----------------------------
-    # Completion/respondents/comments
+    # Completion / respondents (COMMENTS REMOVED)
     # -----------------------------
     completion_df = None
     respondents_df = None
-    comments_df = None
 
     if is_all_teams:
         completion_df = pd.DataFrame(
             {"Metric": [f"{profile.respondent_plural.capitalize()} who completed this survey"], "Value": [n_resp]}
         )
     else:
-        # Always 8 per row for team pages
         respondents_df = _build_all_respondents_grid(
             df_group,
             respondent_name_index=profile.respondent_name_index,
-            max_cols=8,
+            max_cols=6,  # keep whatever you were using before
         )
-
-        # Families TEAM pages: NO COMMENTS
-        if profile.key.lower() != "families":
-            comments_df = _build_comments_table(df_group, respondent_name_index=profile.respondent_name_index)
 
     if (
         low_df is None and
         no_df is None and
         completion_df is None and
-        respondents_df is None and
-        comments_df is None
+        respondents_df is None
     ):
         return
 
@@ -611,6 +604,7 @@ def _add_group_tables_page_to_pdf(
     # -----------------------------
     def _draw_table(ax, df, labels, title, fontsize=8, scale_y=1.35, col_widths=None, wrap=False):
         ax.axis("off")
+
         if df is None or getattr(df, "empty", False):
             return None
 
@@ -618,13 +612,22 @@ def _add_group_tables_page_to_pdf(
         if col_widths is None:
             col_widths = [1.0 / max(ncols, 1)] * ncols
 
+        hide_header = False
+        if labels is None:
+            hide_header = True
+        else:
+            lab_strs = [str(x).strip() for x in labels]
+            if all(re.fullmatch(r"Respondents\s*\d+", s) for s in lab_strs):
+                hide_header = True
+            if all(s == "" for s in lab_strs):
+                hide_header = True
+
         table_kwargs = dict(
             cellText=df.values,
             loc="upper left",
             colWidths=col_widths,
         )
-        # If labels is None -> NO header row at all
-        if labels is not None:
+        if not hide_header:
             table_kwargs["colLabels"] = labels
 
         tbl = ax.table(**table_kwargs)
@@ -637,11 +640,9 @@ def _add_group_tables_page_to_pdf(
 
         if wrap:
             for (r, c), cell in tbl.get_celld().items():
-                # header formatting if header exists
-                if labels is not None and r == 0:
+                if (not hide_header) and r == 0:
                     cell.set_text_props(ha="center", va="center", fontweight="bold")
                     continue
-
                 if c == 0:
                     cell.set_text_props(ha="center", va="top")
                 else:
@@ -653,95 +654,101 @@ def _add_group_tables_page_to_pdf(
 
         return tbl
 
-    # =========================================================
-    # FAMILIES TEAM PAGES: FORCE ONE (1) details page only
-    #   - Low ratings 1-8
-    #   - Low ratings 9-16 (Q16 merged as last column)
-    #   - Respondents grid
-    #   - NO comments
-    # =========================================================
-    if profile.key.lower() == "families" and (not is_all_teams):
-        MAX_COLS = 8
+    # -----------------------------
+    # WIDE low_df: split into chunks of 8 columns (COMMENTS REMOVED)
+    # -----------------------------
+    MAX_COLS_PER_PAGE = 8
+    if low_df is not None and len(low_df.columns) > MAX_COLS_PER_PAGE:
+        ncols_total = len(low_df.columns)
 
-        sections: List[Tuple[str, pd.DataFrame, Optional[List[str]]]] = []
+        for start in range(0, ncols_total, MAX_COLS_PER_PAGE):
+            end = min(start + MAX_COLS_PER_PAGE, ncols_total)
+            is_last_chunk = (end == ncols_total)
 
-        if low_df is not None:
-            # 1-8
-            low_1 = low_df.iloc[:, 0:MAX_COLS]
-            labels_1 = (low_labels[0:MAX_COLS] if low_labels is not None else list(low_1.columns))
-            sections.append(("low1", low_1, list(labels_1)))
+            low_chunk = low_df.iloc[:, start:end]
+            low_chunk_labels = low_labels[start:end] if low_labels is not None else list(low_chunk.columns)
 
-            # 9-15 (+ Q16 appended)
-            low_2 = low_df.iloc[:, MAX_COLS:]
-            labels_2 = (low_labels[MAX_COLS:] if low_labels is not None else list(low_2.columns))
+            # Families-only merge Q16 into last chunk (keep your existing logic if you had it)
+            merged_low = low_chunk
+            merged_labels = list(low_chunk_labels)
 
-            # Append Q16 from NO table if it exists (single yes/no col)
-            if (no_df is not None) and (len(no_df.columns) == 1) and (no_labels is not None) and (len(no_labels) == 1):
-                max_rows = max(len(low_2), len(no_df))
-                low_2 = low_2.reindex(range(max_rows)).fillna("")
+            do_merge_q16 = (
+                is_last_chunk and
+                (profile.key.lower() == "families") and
+                (no_df is not None) and
+                (no_labels is not None) and
+                (len(no_df.columns) == 1)
+            )
+            if do_merge_q16:
+                max_rows = max(len(merged_low), len(no_df))
+                merged_low = merged_low.reindex(range(max_rows)).fillna("")
                 no_col = no_df.iloc[:, 0].reindex(range(max_rows)).fillna("").astype(str)
 
-                low_2 = low_2.copy()
-                low_2[str(no_df.columns[0])] = no_col.values
-                labels_2 = list(labels_2) + [str(no_labels[0])]
+                merged_low = merged_low.copy()
+                merged_low[str(no_df.columns[0])] = no_col.values
+                merged_labels.append(no_labels[0])
 
-            sections.append(("low2", low_2, list(labels_2)))
+            sections = [("low", merged_low, merged_labels)]
 
-        if respondents_df is not None:
-            sections.append(("respondents", respondents_df, None))  # None => NO header row
+            # On last chunk page, also add completion/respondents (NO COMMENTS)
+            if is_last_chunk:
+                if is_all_teams and completion_df is not None:
+                    sections.append(("completion", completion_df, list(completion_df.columns)))
+                if (not is_all_teams) and (respondents_df is not None):
+                    sections.append(("respondents", respondents_df, list(respondents_df.columns)))
 
-        if not sections:
-            return
+            height_ratios = []
+            for key, *_ in sections:
+                if key == "low":
+                    height_ratios.append(1.35)
+                elif key == "completion":
+                    height_ratios.append(0.65)
+                elif key == "respondents":
+                    height_ratios.append(1.0)
+                else:
+                    height_ratios.append(1.0)
 
-        # Fit 3 blocks on one page
-        height_ratios = []
-        for key, *_ in sections:
-            if key in ("low1", "low2"):
-                height_ratios.append(1.05)
-            elif key == "respondents":
-                height_ratios.append(0.65)
+            fig, axes = plt.subplots(
+                nrows=len(sections),
+                ncols=1,
+                figsize=(11, 8.5),
+                gridspec_kw={"height_ratios": height_ratios},
+            )
+            if len(sections) == 1:
+                axes = [axes]
+
+            for ax, (key, df_sec, labels_sec) in zip(axes, sections):
+                if key == "low":
+                    title = ("1-2 Star Reviews (columns = chart numbers)" if is_all_teams
+                             else "1-3 Star Reviews (columns = chart numbers)")
+                    _draw_table(ax, df_sec, labels_sec, title=title, fontsize=8, scale_y=1.35)
+
+                elif key == "completion":
+                    _draw_table(ax, df_sec, labels_sec, title="Survey completion summary", fontsize=11, scale_y=1.35)
+
+                elif key == "respondents":
+                    _draw_table(
+                        ax, df_sec, labels_sec,
+                        title=f"{profile.respondent_plural.capitalize()} who completed this survey",
+                        fontsize=8, scale_y=1.6
+                    )
+
+            if start == 0:
+                range_str = "1-8"
             else:
-                height_ratios.append(1.0)
+                range_str = "9-16" if do_merge_q16 else f"{start+1}-{end}"
 
-        fig, axes = plt.subplots(
-            nrows=len(sections),
-            ncols=1,
-            figsize=(11, 8.5),
-            gridspec_kw={"height_ratios": height_ratios},
-        )
-        if len(sections) == 1:
-            axes = [axes]
+            fig.suptitle(f"{base_title} - Low Ratings ({range_str})", fontsize=12)
+            fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+            fig.subplots_adjust(hspace=0.55)
+            pdf.savefig(fig)
+            plt.close(fig)
 
-        for ax, (key, df_sec, labels_sec) in zip(axes, sections):
-            if key == "low1":
-                _draw_table(
-                    ax, df_sec, labels_sec,
-                    title="1-3 Star Reviews (columns = chart numbers) (1-8)",
-                    fontsize=8, scale_y=1.25
-                )
-            elif key == "low2":
-                _draw_table(
-                    ax, df_sec, labels_sec,
-                    title="1-3 Star Reviews (columns = chart numbers) (9-16)",
-                    fontsize=8, scale_y=1.25
-                )
-            elif key == "respondents":
-                _draw_table(
-                    ax, df_sec, None,  # NO header row
-                    title="Families who completed this survey",
-                    fontsize=9, scale_y=1.6
-                )
-
-        fig.suptitle(base_title, fontsize=12)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.92])
-        fig.subplots_adjust(hspace=0.55)
-        pdf.savefig(fig)
-        plt.close(fig)
         return
 
-    # =========================================================
-    # Everyone else: keep your existing behavior
-    # =========================================================
+    # -----------------------------
+    # Not wide: single page behavior (COMMENTS REMOVED)
+    # -----------------------------
     sections: List[str] = []
     if low_df is not None:
         sections.append("low")
@@ -754,8 +761,6 @@ def _add_group_tables_page_to_pdf(
     else:
         if respondents_df is not None:
             sections.append("respondents")
-        if comments_df is not None:
-            sections.append("comments")
 
     height_ratios: List[float] = []
     for s in sections:
@@ -767,8 +772,6 @@ def _add_group_tables_page_to_pdf(
             height_ratios.append(0.7)
         elif s == "respondents":
             height_ratios.append(1.1)
-        elif s == "comments":
-            height_ratios.append(1.6)
 
     fig, axes = plt.subplots(
         nrows=len(sections),
@@ -819,30 +822,17 @@ def _add_group_tables_page_to_pdf(
         _draw_table(
             axes[row_idx],
             respondents_df,
-            None,  # NO header row
+            list(respondents_df.columns),
             title=f"{profile.respondent_plural.capitalize()} who completed this survey",
-            fontsize=9,
-            scale_y=1.6,
-        )
-        row_idx += 1
-
-    if (not is_all_teams) and (comments_df is not None):
-        _draw_table(
-            axes[row_idx],
-            comments_df,
-            list(comments_df.columns),
-            title="Comments and Suggestions",
             fontsize=8,
-            scale_y=2.2,
-            col_widths=[0.12, 0.88],
-            wrap=True
+            scale_y=1.6,
         )
 
     fig.suptitle(base_title, fontsize=12)
     fig.tight_layout(rect=[0, 0.03, 1, 0.92])
     fig.subplots_adjust(hspace=0.55)
     pdf.savefig(fig)
-    plt.close(fig)    
+    plt.close(fig)
 
 
 
