@@ -665,10 +665,11 @@ def _add_group_tables_page_to_pdf(
     
     if (
         profile.key.lower() == "families"
-        and (not is_all_teams)
+        and (not is_all_teams)          # <-- THIS is what keeps All Teams unchanged
         and (low_df is not None)
         and (len(low_df.columns) > MAX_COLS_PER_PAGE)
     ):
+
         # Split ratings table into 1-8 and 9-15 (ratings only)
         low_1 = low_df.iloc[:, 0:MAX_COLS_PER_PAGE]
         low_2 = low_df.iloc[:, MAX_COLS_PER_PAGE:len(low_df.columns)]
