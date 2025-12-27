@@ -843,7 +843,110 @@ if is_families and (not is_all_teams) and (low_df is not None) and (len(low_df.c
         # IMPORTANT: In the wide-table path we handled everything already.
         return
 
-
+        # -----------------------------
+        # Not wide: single page behavior (keep original sections)
+        # -----------------------------
+        sections: List[str] = []
+        if low_df is not None:
+            sections.append("low")
+        if no_df is not None:
+            sections.append("no")
+    
+        if is_all_teams:
+            if completion_df is not None:
+                sections.append("completion")
+        else:
+            if respondents_df is not None:
+                sections.append("respondents")
+            if comments_df is not None:
+                sections.append("comments")
+    
+        height_ratios: List[float] = []
+        for s in sections:
+            if s == "low":
+                height_ratios.append(1.2)
+            elif s == "no":
+                height_ratios.append(0.9)
+            elif s == "completion":
+                height_ratios.append(0.7)
+            elif s == "respondents":
+                height_ratios.append(1.1)
+            elif s == "comments":
+                height_ratios.append(1.6)
+    
+        fig, axes = plt.subplots(
+            nrows=len(sections),
+            ncols=1,
+            figsize=(11, 8.5),
+            gridspec_kw={"height_ratios": height_ratios},
+        )
+        if len(sections) == 1:
+            axes = [axes]
+    
+        row_idx = 0
+    
+        if low_df is not None:
+            _draw_table(
+                axes[row_idx],
+                low_df,
+                low_labels if low_labels is not None else list(low_df.columns),
+                title=("1-2 Star Reviews (columns = chart numbers)" if is_all_teams
+                       else "1-3 Star Reviews (columns = chart numbers)"),
+                fontsize=7,
+                scale_y=1.2,
+            )
+            row_idx += 1
+    
+        if no_df is not None:
+            _draw_table(
+                axes[row_idx],
+                no_df,
+                no_labels if no_labels is not None else list(no_df.columns),
+                title='"NO" Replies (columns = chart numbers)',
+                fontsize=8,
+                scale_y=1.2,
+            )
+            row_idx += 1
+    
+        if is_all_teams and completion_df is not None:
+            _draw_table(
+                axes[row_idx],
+                completion_df,
+                list(completion_df.columns),
+                title="Survey completion summary",
+                fontsize=11,
+                scale_y=1.35,
+            )
+            row_idx += 1
+    
+        if (not is_all_teams) and (respondents_df is not None):
+            _draw_table(
+                axes[row_idx],
+                respondents_df,
+                list(respondents_df.columns),
+                title=f"{profile.respondent_plural.capitalize()} who completed this survey",
+                fontsize=8,
+                scale_y=1.6,
+            )
+            row_idx += 1
+    
+        if (not is_all_teams) and (comments_df is not None):
+            _draw_table(
+                axes[row_idx],
+                comments_df,
+                list(comments_df.columns),
+                title="Comments and Suggestions",
+                fontsize=8,
+                scale_y=2.2,
+                col_widths=[0.12, 0.88],
+                wrap=True
+            )
+    
+        fig.suptitle(base_title, fontsize=12)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+        fig.subplots_adjust(hspace=0.55)
+        pdf.savefig(fig)
+        plt.close(fig)
 
 
 
