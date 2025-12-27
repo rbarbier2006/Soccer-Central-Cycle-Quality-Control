@@ -662,22 +662,28 @@ def _add_group_tables_page_to_pdf(
     # (1-8) + (9-16) + Respondents on the SAME page
     # -----------------------------
     MAX_COLS_PER_PAGE = 8
+    is_families = (profile.key.lower() == "families")
     
+    # =========================================================
+    # (1) FAMILIES TEAM PAGES ONLY: combine into ONE details page
+    # =========================================================
     if (
-        profile.key.lower() == "families"
-        and (not is_all_teams)          # <-- THIS is what keeps All Teams unchanged
+        is_families
+        and (not is_all_teams)
         and (low_df is not None)
         and (len(low_df.columns) > MAX_COLS_PER_PAGE)
     ):
-
-        # Split ratings table into 1-8 and 9-15 (ratings only)
+        ncols_total = len(low_df.columns)
+    
+        # Block 1: 1-8
         low_1 = low_df.iloc[:, 0:MAX_COLS_PER_PAGE]
-        low_2 = low_df.iloc[:, MAX_COLS_PER_PAGE:len(low_df.columns)]
-    
         labels_1 = (low_labels[0:MAX_COLS_PER_PAGE] if low_labels is not None else list(low_1.columns))
-        labels_2 = (low_labels[MAX_COLS_PER_PAGE:len(low_df.columns)] if low_labels is not None else list(low_2.columns))
     
-        # Merge Q16 (YES/NO "NO replies" column) into the SECOND block as the last column
+        # Block 2: 9-15 (+ merge Q16 NO replies as last column)
+        low_2 = low_df.iloc[:, MAX_COLS_PER_PAGE:ncols_total]
+        labels_2 = (low_labels[MAX_COLS_PER_PAGE:ncols_total] if low_labels is not None else list(low_2.columns))
+    
+        # merge Q16 (NO replies) into block 2 as last column, if present
         if (no_df is not None) and (no_labels is not None) and (len(no_df.columns) == 1):
             max_rows = max(len(low_2), len(no_df))
             low_2 = low_2.reindex(range(max_rows)).fillna("")
@@ -687,12 +693,13 @@ def _add_group_tables_page_to_pdf(
             low_2[str(no_df.columns[0])] = no_col.values
             labels_2 = list(labels_2) + [no_labels[0]]
     
-        # Build one combined page: low_1 + low_2 + respondents
-        sections = [("low1", low_1, labels_1), ("low2", low_2, labels_2)]
+        sections = []
+        sections.append(("low1", low_1, list(labels_1)))
+        sections.append(("low2", low_2, list(labels_2)))
         if respondents_df is not None:
-            sections.append(("respondents", respondents_df, None))  # labels=None => no header row
+            sections.append(("respondents", respondents_df, list(respondents_df.columns)))
     
-        height_ratios = [1.05, 1.05] + ([0.75] if respondents_df is not None else [])
+        height_ratios = [1.1, 1.1] + ([0.75] if respondents_df is not None else [])
         fig, axes = plt.subplots(
             nrows=len(sections),
             ncols=1,
@@ -704,121 +711,92 @@ def _add_group_tables_page_to_pdf(
     
         for ax, (key, df_sec, labels_sec) in zip(axes, sections):
             if key == "low1":
-                _draw_table(
-                    ax, df_sec, labels_sec,
-                    title="1-3 Star Reviews (columns = chart numbers) (1-8)",
-                    fontsize=8, scale_y=1.25
-                )
+                _draw_table(ax, df_sec, labels_sec,
+                            title="1-3 Star Reviews (columns = chart numbers) (1-8)",
+                            fontsize=8, scale_y=1.25)
             elif key == "low2":
-                _draw_table(
-                    ax, df_sec, labels_sec,
-                    title="1-3 Star Reviews (columns = chart numbers) (9-16)",
-                    fontsize=8, scale_y=1.25
-                )
+                _draw_table(ax, df_sec, labels_sec,
+                            title="1-3 Star Reviews (columns = chart numbers) (9-16)",
+                            fontsize=8, scale_y=1.25)
             elif key == "respondents":
-                _draw_table(
-                    ax, df_sec, None,
-                    title="Families who completed this survey",
-                    fontsize=8, scale_y=1.6
-                )
+                _draw_table(ax, df_sec, list(df_sec.columns),
+                            title="Families who completed this survey",
+                            fontsize=8, scale_y=1.6)
     
         fig.suptitle(base_title, fontsize=12)
         fig.tight_layout(rect=[0, 0.03, 1, 0.92])
         fig.subplots_adjust(hspace=0.55)
         pdf.savefig(fig)
         plt.close(fig)
+        return  # <-- IMPORTANT
     
-        # IMPORTANT: stop here so the old 2-page split logic does NOT run
-        return
+    
+    # =========================================================
+    # (2) EVERYONE ELSE (INCLUDING FAMILIES ALL TEAMS): keep OLD split pages
+    # =========================================================
+    if low_df is not None and len(low_df.columns) > MAX_COLS_PER_PAGE:
+        ncols_total = len(low_df.columns)
+    
+        for start in range(0, ncols_total, MAX_COLS_PER_PAGE):
+            end = min(start + MAX_COLS_PER_PAGE, ncols_total)
+            is_last_chunk = (end == ncols_total)
+    
+            low_chunk = low_df.iloc[:, start:end]
+            low_chunk_labels = (low_labels[start:end] if low_labels is not None else list(low_chunk.columns))
+    
+            merged_low = low_chunk
+            merged_labels = list(low_chunk_labels)
+    
+            # Families: merge Q16 NO replies into LAST chunk as last column (this is your old All Teams look)
+            do_merge_q16 = (
+                is_last_chunk
+                and is_families
+                and (no_df is not None)
+                and (no_labels is not None)
+                and (len(no_df.columns) == 1)
+            )
+            if do_merge_q16:
+                max_rows = max(len(merged_low), len(no_df))
+                merged_low = merged_low.reindex(range(max_rows)).fillna("")
+                no_col = no_df.iloc[:, 0].reindex(range(max_rows)).fillna("").astype(str)
+    
+                merged_low = merged_low.copy()
+                merged_low[str(no_df.columns[0])] = no_col.values
+                merged_labels.append(no_labels[0])
+    
+            # sections for this chunk page
+            sections = [("low", merged_low, merged_labels)]
+    
+            if is_last_chunk and is_all_teams and completion_df is not None:
+                sections.append(("completion", completion_df, list(completion_df.columns)))
+    
+            height_ratios = [1.35] + ([0.65] if (is_last_chunk and is_all_teams and completion_df is not None) else [])
+            fig, axes = plt.subplots(
+                nrows=len(sections),
+                ncols=1,
+                figsize=(11, 8.5),
+                gridspec_kw={"height_ratios": height_ratios},
+            )
+            if len(sections) == 1:
+                axes = [axes]
+    
+            for ax, (key, df_sec, labels_sec) in zip(axes, sections):
+                if key == "low":
+                    title = ("1-2 Star Reviews (columns = chart numbers)" if is_all_teams
+                             else "1-3 Star Reviews (columns = chart numbers)")
+                    _draw_table(ax, df_sec, labels_sec, title=title, fontsize=8, scale_y=1.35)
+                elif key == "completion":
+                    _draw_table(ax, df_sec, labels_sec, title="Survey completion summary", fontsize=11, scale_y=1.35)
+    
+            range_str = "1-8" if start == 0 else "9-16"
+            fig.suptitle(f"{base_title} - Low Ratings ({range_str})", fontsize=12)
+            fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+            fig.subplots_adjust(hspace=0.55)
+            pdf.savefig(fig)
+            plt.close(fig)
+    
+        return  # <-- IMPORTANT
 
-
-    # -----------------------------
-    # Not wide: single page behavior (COMMENTS REMOVED)
-    # -----------------------------
-    sections: List[str] = []
-    if low_df is not None:
-        sections.append("low")
-    if no_df is not None:
-        sections.append("no")
-
-    if is_all_teams:
-        if completion_df is not None:
-            sections.append("completion")
-    else:
-        if respondents_df is not None:
-            sections.append("respondents")
-
-    height_ratios: List[float] = []
-    for s in sections:
-        if s == "low":
-            height_ratios.append(1.2)
-        elif s == "no":
-            height_ratios.append(0.9)
-        elif s == "completion":
-            height_ratios.append(0.7)
-        elif s == "respondents":
-            height_ratios.append(1.1)
-
-    fig, axes = plt.subplots(
-        nrows=len(sections),
-        ncols=1,
-        figsize=(11, 8.5),
-        gridspec_kw={"height_ratios": height_ratios},
-    )
-    if len(sections) == 1:
-        axes = [axes]
-
-    row_idx = 0
-
-    if low_df is not None:
-        _draw_table(
-            axes[row_idx],
-            low_df,
-            low_labels if low_labels is not None else list(low_df.columns),
-            title=("1-2 Star Reviews (columns = chart numbers)" if is_all_teams
-                   else "1-3 Star Reviews (columns = chart numbers)"),
-            fontsize=7,
-            scale_y=1.2,
-        )
-        row_idx += 1
-
-    if no_df is not None:
-        _draw_table(
-            axes[row_idx],
-            no_df,
-            no_labels if no_labels is not None else list(no_df.columns),
-            title='"NO" Replies (columns = chart numbers)',
-            fontsize=8,
-            scale_y=1.2,
-        )
-        row_idx += 1
-
-    if is_all_teams and completion_df is not None:
-        _draw_table(
-            axes[row_idx],
-            completion_df,
-            list(completion_df.columns),
-            title="Survey completion summary",
-            fontsize=11,
-            scale_y=1.35,
-        )
-        row_idx += 1
-
-    if (not is_all_teams) and (respondents_df is not None):
-        _draw_table(
-            axes[row_idx],
-            respondents_df,
-            list(respondents_df.columns),
-            title=f"{profile.respondent_plural.capitalize()} who completed this survey",
-            fontsize=8,
-            scale_y=1.6,
-        )
-
-    fig.suptitle(base_title, fontsize=12)
-    fig.tight_layout(rect=[0, 0.03, 1, 0.92])
-    fig.subplots_adjust(hspace=0.55)
-    pdf.savefig(fig)
-    plt.close(fig)
 
 
 
