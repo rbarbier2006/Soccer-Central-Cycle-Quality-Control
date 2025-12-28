@@ -327,7 +327,6 @@ def _add_group_charts_page_to_pdf(
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
         idx = meta["idx"]
-        col_name = meta["col_name"]
         number = meta["number"]
 
         ax.text(
@@ -337,9 +336,13 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        # IMPORTANT CHANGE:
-        # Always use the original Excel column header for chart titles.
-        display_title = str(col_name)
+        # IMPORTANT FIX:
+        # Always use the original Excel header from the dataframe (not meta["col_name"] and not profile.chart_labels)
+        try:
+            display_title = str(df_group.columns[idx])
+        except Exception:
+            display_title = str(meta.get("col_name", ""))
+
         wrapped_title = textwrap.fill(display_title, width=wrap_width)
 
         if ptype == "rating":
