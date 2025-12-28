@@ -502,16 +502,22 @@ def _add_group_tables_page_to_pdf(
             low_labels = []
             for colname in low_df.columns:
                 num = rating_number_by_name.get(colname)
-                if use_original_excel_headers_for_tables:
-                    if num is not None:
-                        low_labels.append(f"({num}){str(colname)}")
-                    else:
-                        low_labels.append(str(colname))
+        
+                # TABLES must use the short labels (old behavior)
+                if num is not None and profile.chart_labels and num in profile.chart_labels:
+                    label = str(profile.chart_labels[num]).strip()
+        
+                    # Ensure it has the "(num)" prefix like before
+                    if not re.match(r"^\(\d+\)", label):
+                        label = f"({num}){label}"
+                elif num is not None:
+                    # fallback if chart_labels is missing for some reason
+                    label = f"({num})Q{num}"
                 else:
-                    if num is not None and profile.chart_labels and num in profile.chart_labels:
-                        low_labels.append(profile.chart_labels[num])
-                    else:
-                        low_labels.append(str(colname))
+                    label = str(colname)
+        
+                low_labels.append(label)
+
 
     # -----------------------------
     # Build NO answers table (yes/no only)
