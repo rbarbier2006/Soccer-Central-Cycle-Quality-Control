@@ -273,6 +273,7 @@ def _build_plot_metadata(profile: SurveyProfile, df_group: pd.DataFrame) -> List
     return meta
 
 
+
 # -----------------------------
 # Page: charts grid (page 1 per group)
 # -----------------------------
@@ -320,15 +321,16 @@ def _add_group_charts_page_to_pdf(
 
     y_label = f"{profile.respondent_singular.capitalize()} Count"
 
-    # Wrap + font sizing tuned for long Excel headers
-    wrap_width = 26 if ncols == 4 else 40
-    title_fs = 7 if ncols == 4 else 8  # smaller titles to fit full Excel text
+    # Better wrapping for long Excel headers + smaller font
+    wrap_width = 32 if ncols == 4 else 50
+    title_fs = 6 if ncols == 4 else 7  # small enough to fit long questions
 
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
         idx = meta["idx"]
         number = meta["number"]
 
+        # Big chart number in corner stays the same
         ax.text(
             0.02, 0.98, str(number),
             transform=ax.transAxes,
@@ -336,8 +338,8 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        # IMPORTANT FIX:
-        # Always use the original Excel header from the dataframe (not meta["col_name"] and not profile.chart_labels)
+        # THE FIX:
+        # Always pull the title from the original Excel header in df_group (NOT profile.chart_labels)
         try:
             display_title = str(df_group.columns[idx])
         except Exception:
