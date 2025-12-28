@@ -293,6 +293,10 @@ def _add_group_charts_page_to_pdf(
 
     n_plots = len(plots_meta)
 
+    # Grid rule:
+    # - Up to 4 plots: 2 columns
+    # - 5 to 9 plots: 3 columns
+    # - 10+ plots: 4 columns
     if n_plots <= 4:
         ncols = 2
     elif n_plots <= 9:
@@ -319,7 +323,12 @@ def _add_group_charts_page_to_pdf(
         ax.axis("off")
 
     y_label = f"{profile.respondent_singular.capitalize()} Count"
+
+    # Wrap tighter when there are 4 columns
     wrap_width = 26 if ncols == 4 else 40
+
+    # Smaller title font so original Excel text fits better (applies to BOTH families + players)
+    title_fs = 7 if ncols == 4 else 8
 
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
@@ -327,6 +336,7 @@ def _add_group_charts_page_to_pdf(
         col_name = meta["col_name"]
         number = meta["number"]
 
+        # Big chart number in corner
         ax.text(
             0.02, 0.98, str(number),
             transform=ax.transAxes,
@@ -334,11 +344,9 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        if profile.chart_labels and number in profile.chart_labels:
-            display_title = str(profile.chart_labels[number])
-        else:
-            display_title = str(col_name)
-
+        # IMPORTANT CHANGE:
+        # Use the ORIGINAL Excel column name for the chart title (no profile.chart_labels here).
+        display_title = str(col_name)
         wrapped_title = textwrap.fill(display_title, width=wrap_width)
 
         if ptype == "rating":
@@ -353,7 +361,7 @@ def _add_group_charts_page_to_pdf(
             else:
                 title = f"{wrapped_title}\n(Avg = {avg:.2f})"
 
-            ax.set_title(title, fontsize=9)
+            ax.set_title(title, fontsize=title_fs)
             ax.set_xlabel("# of Stars", fontsize=8)
             ax.set_ylabel(y_label, fontsize=8)
             ax.tick_params(labelsize=8)
@@ -377,7 +385,7 @@ def _add_group_charts_page_to_pdf(
                     return f"{pct:.0f}%, {count}"
 
                 ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
-                ax.set_title(wrapped_title, fontsize=9)
+                ax.set_title(wrapped_title, fontsize=title_fs)
 
         elif ptype == "choice":
             series = df_group.iloc[:, idx].dropna().astype(str).str.strip()
@@ -395,13 +403,15 @@ def _add_group_charts_page_to_pdf(
                     return f"{pct:.0f}%, {count}"
 
                 ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
-                ax.set_title(wrapped_title, fontsize=9)
+                ax.set_title(wrapped_title, fontsize=title_fs)
 
     full_title = _compose_group_title(profile, title_label, cycle_label) + n_text
     fig.suptitle(full_title, fontsize=14, fontweight="bold")
+
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     pdf.savefig(fig)
     plt.close(fig)
+
 
 
 # -----------------------------
