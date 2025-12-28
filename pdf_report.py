@@ -319,7 +319,10 @@ def _add_group_charts_page_to_pdf(
         ax.axis("off")
 
     y_label = f"{profile.respondent_singular.capitalize()} Count"
+
+    # Wrap + font sizing tuned for long Excel headers
     wrap_width = 26 if ncols == 4 else 40
+    title_fs = 7 if ncols == 4 else 8  # smaller titles to fit full Excel text
 
     for ax, meta in zip(axes_flat, plots_meta):
         ptype = meta["ptype"]
@@ -334,11 +337,9 @@ def _add_group_charts_page_to_pdf(
             fontsize=10, fontweight="bold",
         )
 
-        if profile.chart_labels and number in profile.chart_labels:
-            display_title = str(profile.chart_labels[number])
-        else:
-            display_title = str(col_name)
-
+        # IMPORTANT CHANGE:
+        # Always use the original Excel column header for chart titles.
+        display_title = str(col_name)
         wrapped_title = textwrap.fill(display_title, width=wrap_width)
 
         if ptype == "rating":
@@ -353,7 +354,7 @@ def _add_group_charts_page_to_pdf(
             else:
                 title = f"{wrapped_title}\n(Avg = {avg:.2f})"
 
-            ax.set_title(title, fontsize=9)
+            ax.set_title(title, fontsize=title_fs)
             ax.set_xlabel("# of Stars", fontsize=8)
             ax.set_ylabel(y_label, fontsize=8)
             ax.tick_params(labelsize=8)
@@ -377,7 +378,7 @@ def _add_group_charts_page_to_pdf(
                     return f"{pct:.0f}%, {count}"
 
                 ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
-                ax.set_title(wrapped_title, fontsize=9)
+                ax.set_title(wrapped_title, fontsize=title_fs)
 
         elif ptype == "choice":
             series = df_group.iloc[:, idx].dropna().astype(str).str.strip()
@@ -395,7 +396,7 @@ def _add_group_charts_page_to_pdf(
                     return f"{pct:.0f}%, {count}"
 
                 ax.pie(data, labels=labels, autopct=make_label, textprops={"fontsize": 8})
-                ax.set_title(wrapped_title, fontsize=9)
+                ax.set_title(wrapped_title, fontsize=title_fs)
 
     full_title = _compose_group_title(profile, title_label, cycle_label) + n_text
     fig.suptitle(full_title, fontsize=14, fontweight="bold")
@@ -403,6 +404,7 @@ def _add_group_charts_page_to_pdf(
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     pdf.savefig(fig)
     plt.close(fig)
+
 
 
 # -----------------------------
